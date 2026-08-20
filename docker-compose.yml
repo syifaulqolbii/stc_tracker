@@ -14,7 +14,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres123}@db:5432/moban
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-postgres123}@db:5432/moban}
       - WAHA_URL=http://waha:3000
       - WAHA_API_KEY=${WAHA_API_KEY:-}
       - WAHA_SESSION=${WAHA_SESSION:-default}
