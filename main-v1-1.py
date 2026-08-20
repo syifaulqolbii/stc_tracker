@@ -38,7 +38,8 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WA_GROUP_ID = os.getenv("WA_GROUP_ID", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/moban")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "WAHA")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://9router.tefambo.site/v1")
 
 WAHA_HEADERS = {"X-Api-Key": WAHA_KEY}
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
@@ -311,7 +312,7 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
+                    f"{LLM_BASE_URL}/chat/completions",
                     headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                     json={"model": OPENROUTER_MODEL,
                           "messages": [{"role": "user", "content": prompt}],
