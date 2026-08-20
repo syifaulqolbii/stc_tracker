@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS wa_messages (
     quoted_id     VARCHAR(128),              -- parent (pesan yang di-reply); NULL jika bukan reply
     case_id       INT REFERENCES cases(id) ON DELETE SET NULL,
     author        VARCHAR(64),
+    author_name   VARCHAR(128),              -- resolved contact name from WAHA
     body          TEXT,
     from_me       BOOLEAN DEFAULT false,
     created_at    TIMESTAMPTZ DEFAULT now()

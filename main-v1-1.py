@@ -13,6 +13,7 @@ import os
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 import httpx
 import psycopg
@@ -52,7 +53,12 @@ LLM_RETRY_DELAY = 1.0  # seconds base delay
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))  # requests per minute
 _rate_buckets: dict[str, list[float]] = {}
 
-app = FastAPI(title="Moban FU Tracker", docs_url="/docs", redoc_url="/redoc")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await _fetch_contacts()
+    yield
+
+app = FastAPI(title="Moban FU Tracker", docs_url="/docs", redoc_url="/redoc", lifespan=lifespan)
 
 # CORS — allow frontend origins
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -172,6 +178,59 @@ def extract_quoted_id(p: dict) -> str | None:
         return d["quotedMsgId"]
     q = d.get("quotedMsg") or {}
     return norm_id(q.get("id"))
+
+
+# ---------------------------------------------------------------- contact resolution
+
+# Contact name cache (author_id -> display name)
+_contact_cache: dict[str, str] = {}
+
+
+async def _fetch_contacts():
+    """Fetch all contacts from WAHA and build author_id→name cache."""
+    global _contact_cache
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                f"{WAHA_URL}/api/contacts/all",
+                params={"session": WAHA_SESSION, "limit": 500},
+                headers=WAHA_HEADERS,
+            )
+            r.raise_for_status()
+            for contact in r.json():
+                cid = contact.get("id", "")
+                name = contact.get("name") or contact.get("pushname") or contact.get("shortName")
+                if name and cid:
+                    _contact_cache[cid] = name
+            log.info("Loaded %d contacts into cache", len(_contact_cache))
+    except Exception as e:
+        log.warning("Failed to fetch contacts from WAHA: %s", e)
+
+
+async def resolve_contact_name(author: str | None) -> str | None:
+    """Resolve author (lid/phone) to contact name. Uses cache, falls back to API."""
+    if not author:
+        return None
+    # Check cache first
+    if author in _contact_cache:
+        return _contact_cache[author]
+    # Try individual lookup via WAHA
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(
+                f"{WAHA_URL}/api/contacts",
+                params={"contactId": author, "session": WAHA_SESSION},
+                headers=WAHA_HEADERS,
+            )
+            r.raise_for_status()
+            data = r.json()
+            name = data.get("name") or data.get("pushname") or data.get("shortName")
+            if name:
+                _contact_cache[author] = name
+            return name
+    except Exception as e:
+        log.debug("Contact resolve failed for %s: %s", author, e)
+        return None
 
 
 INC_RE = re.compile(r"\bINC\d{9,}\b", re.I)
@@ -408,6 +467,16 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
 
     store_message(wa_mid, quoted, author, body)
 
+    # Resolve contact name in background (non-blocking)
+    author_name = await resolve_contact_name(author)
+    if author_name:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE wa_messages SET author_name = %s WHERE wa_message_id = %s", (author_name, wa_mid))
+                conn.commit()
+        except Exception:
+            pass  # non-critical
+
     case, source, conf = None, None, None
     parsed = parse_rule(body)
 
@@ -554,7 +623,7 @@ def case_detail(case_id: int, request: Request, _auth: str = Depends(verify_api_
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
         cur.execute(
-            """SELECT wa_message_id, quoted_id, author, body, from_me, created_at
+            """SELECT wa_message_id, quoted_id, author, author_name, body, from_me, created_at
                FROM wa_messages WHERE case_id = %s ORDER BY created_at""",
             (case_id,),
         )
@@ -563,7 +632,13 @@ def case_detail(case_id: int, request: Request, _auth: str = Depends(verify_api_
             "SELECT * FROM progress_updates WHERE case_id = %s ORDER BY created_at", (case_id,)
         )
         updates = cur.fetchall()
-    participants = sorted({m["author"] for m in messages if m["author"] and not m["from_me"]})
+    # Build unique participants list with names
+    seen = set()
+    participants = []
+    for m in messages:
+        if m["author"] and not m["from_me"] and m["author"] not in seen:
+            seen.add(m["author"])
+            participants.append({"author": m["author"], "name": m.get("author_name")})
     return {"case": case, "messages": messages, "updates": updates, "participants": participants}
 
 

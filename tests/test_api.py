@@ -60,9 +60,10 @@ def _make_mock_db(fetchone_sequence=None):
 
 @pytest.fixture
 def client(mock_waha):
-    """Create test client with mocked WAHA."""
+    """Create test client with mocked WAHA and contact resolution."""
     mock_conn, mock_cursor = _make_mock_db()
-    with patch.object(main_module, "db", return_value=mock_conn):
+    with patch.object(main_module, "db", return_value=mock_conn), \
+         patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
         yield TestClient(main_module.app), mock_cursor
 
 
