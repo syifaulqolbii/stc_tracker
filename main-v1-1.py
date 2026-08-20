@@ -372,9 +372,14 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
 
 async def handle_message(p: dict, crawl: bool = False) -> bool:
     """Proses satu pesan grup. Return True jika berhasil dikaitkan ke case."""
+    log.info("WEBHOOK payload keys: from=%s fromMe=%s participant=%s body=%s quoted=%s",
+             p.get("from"), p.get("fromMe"), p.get("participant"),
+             (p.get("body") or "")[:60], extract_quoted_id(p))
     if p.get("fromMe"):
+        log.debug("SKIP: fromMe=true")
         return False
     if WA_GROUP_ID and p.get("from") != WA_GROUP_ID:
+        log.warning("SKIP: from=%s != WA_GROUP_ID=%s", p.get("from"), WA_GROUP_ID)
         return False
     body = (p.get("body") or "").strip()
     if not body:
