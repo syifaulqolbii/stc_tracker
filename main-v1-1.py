@@ -335,7 +335,11 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
                           "response_format": {"type": "json_object"}},
                 )
                 r.raise_for_status()
-                raw = r.json()["choices"][0]["message"]["content"]
+                resp_json = r.json()
+                raw = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if not raw or not raw.strip():
+                    log.warning("LLM returned empty content (attempt %d/%d)", attempt + 1, LLM_MAX_RETRIES)
+                    return None  # empty response = no match, don't retry
                 cleaned = _strip_markdown_json(raw)
                 data = json.loads(cleaned)
                 validated = _validate_llm_response(data)
