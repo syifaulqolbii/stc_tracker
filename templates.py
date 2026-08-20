@@ -69,13 +69,17 @@ TYPE_LABELS = {
 def render_header(mentions: list[dict], case_type: str) -> str:
     """Render the greeting + mention line at the top of the message.
 
-    Format: punten rekan @<name> mohon bantuannya untuk case <TYPE> ada 1 case lagi
+    WhatsApp mentions require @<phone_number> in text for the mention to work.
+    WAHA/WhatsApp automatically renders the display name from the contact.
+
+    Format: punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi
     """
     label = TYPE_LABELS.get(case_type, case_type.upper())
     parts = ["punten rekan"]
     for m in mentions:
-        name = m.get("name") or m.get("number", "")
-        parts.append(f"@{name}")
+        number = m.get("number", "")
+        if number:
+            parts.append(f"@{number}")
     parts.append(f"mohon bantuannya untuk case {label} ada 1 case lagi")
     return " ".join(parts)
 

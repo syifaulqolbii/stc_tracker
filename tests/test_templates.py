@@ -19,7 +19,7 @@ def test_render_header_with_mentions():
     result = render_header(
         [{"number": "6281234567890", "name": "Mas Budi"}], "stc"
     )
-    assert "@Mas Budi" in result
+    assert "@6281234567890" in result
     assert "mohon bantuannya untuk case STC" in result
     assert "punten rekan" in result
 
@@ -29,8 +29,8 @@ def test_render_header_multiple_mentions():
         [{"number": "628111", "name": "A"}, {"number": "628222", "name": "B"}],
         "smooa",
     )
-    assert "@A" in result
-    assert "@B" in result
+    assert "@628111" in result
+    assert "@628222" in result
 
 
 def test_render_header_no_name():

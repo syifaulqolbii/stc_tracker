@@ -89,7 +89,7 @@ class TestCreateCase:
         assert data["case_code"] == "INC000023470570"
         assert data["wa_message_id"] == "test_msg_123"
         assert "punten rekan" in data["text"]
-        assert "@Mas Budi" in data["text"]
+        assert "@6281234567890" in data["text"]
         assert "#STC" in data["text"]
 
     def test_create_smooa_case(self, client):
