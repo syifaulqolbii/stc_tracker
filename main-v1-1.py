@@ -226,12 +226,13 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
     cur, depth = quoted_id, 0
     with db() as conn, conn.cursor() as cur_db:
         while cur and depth < MAX_CHAIN_DEPTH:
-            cur_db.execute("SELECT * FROM cases WHERE wa_message_id = %s", (cur,))
+            # WAHA may send short/partial IDs, use LIKE for matching
+            cur_db.execute("SELECT * FROM cases WHERE wa_message_id = %s OR wa_message_id LIKE %s", (cur, f"%{cur}%"))
             case = cur_db.fetchone()
             if case:
                 return case, ("reply" if depth == 0 else "chain")
             cur_db.execute(
-                "SELECT quoted_id, case_id FROM wa_messages WHERE wa_message_id = %s", (cur,)
+                "SELECT quoted_id, case_id FROM wa_messages WHERE wa_message_id = %s OR wa_message_id LIKE %s", (cur, f"%{cur}%")
             )
             row = cur_db.fetchone()
             if not row:
