@@ -1,0 +1,51 @@
+# Moban FU Case Tracker — Production Overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    restart: always
+    ports: []  # Don't expose directly, use nginx
+    environment:
+      - WORKERS=4
+      - LOG_LEVEL=warning
+      - RATE_LIMIT_RPM=120
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    restart: always
+    ports: []  # Don't expose directly
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  waha:
+    restart: always
+    ports: []  # Don't expose directly
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
