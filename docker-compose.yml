@@ -36,7 +36,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+ 
   # PostgreSQL database
   db:
     image: postgres:16-alpine
