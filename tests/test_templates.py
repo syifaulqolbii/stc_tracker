@@ -20,8 +20,8 @@ def test_render_header_with_mentions():
         [{"number": "6281234567890", "name": "Mas Budi"}], "stc"
     )
     assert "@Mas Budi" in result
-    assert "moban FU case berikut" in result
-    assert "punten mas" in result
+    assert "mohon bantuannya untuk case STC" in result
+    assert "punten rekan" in result
 
 
 def test_render_header_multiple_mentions():
@@ -40,8 +40,7 @@ def test_render_header_no_name():
 
 def test_render_header_empty_mentions():
     result = render_header([], "stc")
-    assert "moban FU case berikut" in result
-
+    assert "mohon bantuannya untuk case STC" in result
 
 def test_render_case_text_stc():
     fields = {

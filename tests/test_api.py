@@ -88,7 +88,7 @@ class TestCreateCase:
         data = response.json()
         assert data["case_code"] == "INC000023470570"
         assert data["wa_message_id"] == "test_msg_123"
-        assert "punten mas" in data["text"]
+        assert "punten rekan" in data["text"]
         assert "@Mas Budi" in data["text"]
         assert "#STC" in data["text"]
 
