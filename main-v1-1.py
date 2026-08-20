@@ -344,7 +344,8 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
                     headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                     json={"model": OPENROUTER_MODEL,
                           "messages": [{"role": "user", "content": prompt}],
-                          "response_format": {"type": "json_object"}},
+                          "response_format": {"type": "json_object"},
+                          "stream": False},
                 )
                 r.raise_for_status()
                 resp_json = r.json()
