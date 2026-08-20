@@ -230,6 +230,7 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
             cur_db.execute("SELECT * FROM cases WHERE wa_message_id = %s OR wa_message_id LIKE %s", (cur, f"%{cur}%"))
             case = cur_db.fetchone()
             if case:
+                # Direct match to root message = reply; anything deeper = chain
                 return case, ("reply" if depth == 0 else "chain")
             cur_db.execute(
                 "SELECT quoted_id, case_id FROM wa_messages WHERE wa_message_id = %s OR wa_message_id LIKE %s", (cur, f"%{cur}%")
@@ -241,7 +242,8 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
                 cur_db.execute("SELECT * FROM cases WHERE id = %s", (row["case_id"],))
                 case = cur_db.fetchone()
                 if case:
-                    return case, ("reply" if depth == 0 else "chain")
+                    # Found via wa_messages.case_id = not a direct reply to root
+                    return case, "chain"
             cur, depth = row["quoted_id"], depth + 1
     return None, ""
 

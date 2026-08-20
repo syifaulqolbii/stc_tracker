@@ -94,7 +94,7 @@ class TestFindByChain:
         with patch.object(main_module, "db", return_value=mock_conn):
             case, source = main_module.find_case_by_chain("linked_msg")
             assert case == root_case
-            assert source == "reply"  # depth 0
+            assert source == "chain"  # found via wa_messages.case_id, not direct root match
 
     def test_missing_message_returns_none(self):
         """Message not found in wa_messages → return None."""
