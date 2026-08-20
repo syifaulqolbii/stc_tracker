@@ -274,11 +274,20 @@ def link_and_update(case_id, wa_mid, author, body, status, note, source, confide
 # ---------------------------------------------------------------- LLM fallback
 
 def _strip_markdown_json(raw: str) -> str:
-    """Strip markdown code fences from LLM JSON response."""
+    """Strip markdown code fences and extract JSON from LLM response.
+    
+    Handles: raw JSON, ```json fences, JSON embedded in prose, etc.
+    """
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)
         raw = re.sub(r"\n?```\s*$", "", raw)
+    # If still not starting with {, try to find JSON substring
+    if not raw.startswith("{"):
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end > start:
+            raw = raw[start:end + 1]
     return raw.strip()
 
 
@@ -352,7 +361,11 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
                 return None  # invalid structure, don't retry
         except json.JSONDecodeError as e:
             last_error = e
-            log.warning("LLM JSON parse failed (attempt %d/%d): %s", attempt + 1, LLM_MAX_RETRIES, e)
+            log.warning("LLM JSON parse failed (attempt %d/%d): %s | raw: %s", attempt + 1, LLM_MAX_RETRIES, e, repr(raw[:200]))
+            # If response has no JSON at all, don't retry
+            if not raw or "{" not in raw:
+                log.warning("LLM response has no JSON, skipping")
+                return None
         except httpx.HTTPStatusError as e:
             last_error = e
             # Don't retry on 4xx errors (client errors)
@@ -405,15 +418,17 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
         case, chain_src = find_case_by_chain(quoted)
         if case:
             source = chain_src
-    # 4) LLM fallback (case tidak ketemu, atau ketemu tapi status tidak terbaca)
-    if case is None or not parsed.get("status"):
+    # 4) LLM fallback — only when case NOT found via regex/chain
+    # Skip LLM when case is already found: chain/reply already links the message,
+    # no need for LLM to guess status (saves 9-10s per message)
+    if case is None:
         ai = await parse_llm(body, open_case_codes())
         if ai and (ai.get("confidence") or 0) >= 0.7:
-            if case is None and ai.get("case_code"):
+            if ai.get("case_code"):
                 case = find_case_by_code(ai["case_code"])
             if case:
-                parsed["status"] = parsed.get("status") or ai.get("status")
-                parsed["note"] = parsed.get("note") or ai.get("note")
+                parsed["status"] = ai.get("status")
+                parsed["note"] = ai.get("note")
                 source, conf = "llm", ai.get("confidence")
 
     if case is None:
