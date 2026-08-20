@@ -16,6 +16,7 @@ import uuid
 
 import httpx
 import psycopg
+import psycopg_pool
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -114,8 +115,23 @@ async def verify_api_key(key: str | None = Depends(api_key_header)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
+_pool: psycopg_pool.ConnectionPool | None = None
+
+
+def _get_pool() -> psycopg_pool.ConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = psycopg_pool.ConnectionPool(
+            DATABASE_URL,
+            min_size=2,
+            max_size=10,
+            kwargs={"row_factory": dict_row},
+        )
+    return _pool
+
+
 def db():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    return _get_pool().connection()
 
 
 # ---------------------------------------------------------------- WAHA client
@@ -609,7 +625,7 @@ async def crawl_group(limit: int = 200, request: Request = None, _auth: str = De
 
 
 @app.get("/health")
-def health():
+async def health():
     out = {"status": "ok", "db": "unknown", "waha": "unknown"}
     try:
         with db() as conn, conn.cursor() as cur:
@@ -618,8 +634,9 @@ def health():
     except Exception as e:
         out["db"] = f"error: {e}"
     try:
-        r = httpx.get(f"{WAHA_URL}/api/sessions", headers=WAHA_HEADERS, timeout=10)
-        out["waha"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
+        async with httpx.AsyncClient(timeout=3) as c:
+            r = await c.get(f"{WAHA_URL}/api/sessions", headers=WAHA_HEADERS)
+            out["waha"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
     except Exception as e:
         out["waha"] = f"error: {e}"
     return out

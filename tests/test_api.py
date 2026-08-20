@@ -203,8 +203,13 @@ class TestHealthCheck:
         # No fetchone calls needed for health check (just SELECT 1)
 
         with patch.object(main_module, "db", return_value=mock_conn):
-            with patch.object(main_module.httpx, "get") as mock_get:
-                mock_get.return_value = MagicMock(status_code=200)
+            mock_get_resp = MagicMock()
+            mock_get_resp.status_code = 200
+            mock_async_client = AsyncMock()
+            mock_async_client.get.return_value = mock_get_resp
+            with patch.object(main_module.httpx, "AsyncClient") as mock_ac:
+                mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_async_client)
+                mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
                 tc = TestClient(main_module.app)
 
                 response = tc.get("/health")
