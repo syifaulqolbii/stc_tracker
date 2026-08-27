@@ -227,7 +227,7 @@ async def _fetch_contacts():
             phone_to_name: dict[str, str] = {}
             for contact in r.json():
                 cid = contact.get("id", "")
-                name = contact.get("name") or contact.get("pushname") or contact.get("shortName")
+                name = contact.get("pushname") or contact.get("name") or contact.get("shortName")
                 if name and cid:
                     _contact_cache[cid] = name
                     # Also cache by raw phone number
@@ -302,7 +302,7 @@ async def resolve_contact_name(author: str | None) -> str | None:
             )
             r.raise_for_status()
             data = r.json()
-            name = data.get("name") or data.get("pushname") or data.get("shortName")
+            name = data.get("pushname") or data.get("name") or data.get("shortName")
             if name:
                 _contact_cache[author] = name
                 # Also cache by phone number if we resolved from lid
