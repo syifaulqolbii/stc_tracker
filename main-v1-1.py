@@ -208,39 +208,96 @@ _contact_cache: dict[str, str] = {}
 
 
 async def _fetch_contacts():
-    """Fetch all contacts from WAHA and build author_id→name cache."""
+    """Fetch all contacts + LID mappings from WAHA and build author_id→name cache.
+
+    Populates cache with:
+    - {number}@c.us → name (from contacts/all)
+    - {lid}@lid → name (from lids mapping + contacts lookup)
+    """
     global _contact_cache
     try:
         async with httpx.AsyncClient(timeout=15) as c:
+            # Step 1: Fetch all contacts
             r = await c.get(
                 f"{WAHA_URL}/api/contacts/all",
                 params={"session": WAHA_SESSION, "limit": 500},
                 headers=WAHA_HEADERS,
             )
             r.raise_for_status()
+            phone_to_name: dict[str, str] = {}
             for contact in r.json():
                 cid = contact.get("id", "")
                 name = contact.get("name") or contact.get("pushname") or contact.get("shortName")
                 if name and cid:
                     _contact_cache[cid] = name
+                    # Also cache by raw phone number
+                    number = cid.split("@")[0] if "@" in cid else cid
+                    _contact_cache[number] = name
+                    phone_to_name[number] = name
+
+            # Step 2: Fetch LID mappings to map @lid → phone → name
+            try:
+                r2 = await c.get(
+                    f"{WAHA_URL}/api/{WAHA_SESSION}/lids",
+                    params={"limit": 500},
+                    headers=WAHA_HEADERS,
+                )
+                if r2.status_code == 200:
+                    for mapping in r2.json():
+                        lid = mapping.get("lid", "")
+                        pn = mapping.get("pn", "")
+                        if lid and pn:
+                            pn_number = pn.split("@")[0] if "@" in pn else pn
+                            if pn_number in phone_to_name:
+                                _contact_cache[lid] = phone_to_name[pn_number]
+                                log.debug("Cached LID %s → %s", lid, phone_to_name[pn_number])
+            except Exception as e:
+                log.debug("Failed to fetch LID mappings: %s", e)
+
             log.info("Loaded %d contacts into cache", len(_contact_cache))
     except Exception as e:
         log.warning("Failed to fetch contacts from WAHA: %s", e)
 
 
 async def resolve_contact_name(author: str | None) -> str | None:
-    """Resolve author (lid/phone) to contact name. Uses cache, falls back to API."""
+    """Resolve author (lid/phone) to contact name.
+
+    Resolution flow:
+    1. Check cache (keyed by original author ID)
+    2. If @lid → resolve to phone via GET /api/{session}/lids/{lid}
+    3. Lookup contact by phone or original ID via GET /api/contacts
+    4. Cache both the original ID and the resolved phone → name
+    """
     if not author:
         return None
     # Check cache first
     if author in _contact_cache:
         return _contact_cache[author]
-    # Try individual lookup via WAHA
+
+    phone_number = None
     try:
         async with httpx.AsyncClient(timeout=5) as c:
+            # Step 1: If @lid, resolve to phone number via LID API
+            if author.endswith("@lid"):
+                lid_number = author.split("@")[0]
+                r = await c.get(
+                    f"{WAHA_URL}/api/{WAHA_SESSION}/lids/{lid_number}",
+                    headers=WAHA_HEADERS,
+                )
+                if r.status_code == 200:
+                    lid_data = r.json()
+                    pn = lid_data.get("pn")
+                    if pn:
+                        # pn comes as "123456789@c.us" — extract the number
+                        phone_number = pn.split("@")[0] if "@" in pn else pn
+                        # Also cache the @c.us form
+                        _contact_cache[pn] = None  # placeholder, resolved below
+
+            # Step 2: Lookup contact by phone number (if resolved) or original ID
+            lookup_id = phone_number if phone_number else author
             r = await c.get(
                 f"{WAHA_URL}/api/contacts",
-                params={"contactId": author, "session": WAHA_SESSION},
+                params={"contactId": lookup_id, "session": WAHA_SESSION},
                 headers=WAHA_HEADERS,
             )
             r.raise_for_status()
@@ -248,6 +305,10 @@ async def resolve_contact_name(author: str | None) -> str | None:
             name = data.get("name") or data.get("pushname") or data.get("shortName")
             if name:
                 _contact_cache[author] = name
+                # Also cache by phone number if we resolved from lid
+                if phone_number:
+                    _contact_cache[f"{phone_number}@c.us"] = name
+                    _contact_cache[phone_number] = name
             return name
     except Exception as e:
         log.debug("Contact resolve failed for %s: %s", author, e)
