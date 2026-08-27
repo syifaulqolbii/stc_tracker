@@ -75,6 +75,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Cases", "description": "CRUD dan manajemen case"},
         {"name": "Lookup", "description": "Data referensi: Area, Regional, Sumber Ticket, Jenis Case"},
+        {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
         {"name": "Webhooks", "description": "Webhook receiver dari WAHA (WhatsApp HTTP API)"},
         {"name": "System", "description": "Health check dan operasi sistem"},
     ],
@@ -594,6 +595,19 @@ class StatusIn(BaseModel):
     note: str | None = Field(None, description="Catatan opsional untuk update status")
 
 
+class SolverContactIn(BaseModel):
+    name: str = Field(..., description="Nama kontak solver")
+    phone_number: str = Field(..., description="Nomor WA format internasional tanpa + (contoh: 6281234567890)")
+    role: str | None = Field(None, description="Posisi/role solver (contoh: Solusi 1, Solver IT, Supervisor)")
+
+
+class SolverContactUpdate(BaseModel):
+    name: str | None = Field(None, description="Nama kontak solver")
+    phone_number: str | None = Field(None, description="Nomor WA format internasional tanpa +")
+    role: str | None = Field(None, description="Posisi/role solver")
+    is_active: bool | None = Field(None, description="Status aktif (false = soft delete)")
+
+
 class WahaId(BaseModel):
     _serialized: str | None = None
 
@@ -882,6 +896,141 @@ async def waha_webhook(req: Request):
         await handle_message(payload)
     elif event == "message.ack":
         handle_ack(payload)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- Solver Contacts CRUD
+
+@app.get("/api/solver-contacts", tags=["Solver Contacts"],
+         summary="Daftar semua kontak solver",
+         description="Return list kontak solver. Query: is_active=true untuk hanya yang aktif.")
+def list_solver_contacts(
+    request: Request,
+    is_active: bool | None = Query(None, description="Filter status aktif. Kosongkan untuk semua."),
+    q: str | None = Query(None, description="Pencarian substring di nama atau role"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql = "SELECT id, name, phone_number, role, is_active, created_at, updated_at FROM solver_contacts WHERE true"
+    args: list = []
+    if is_active is not None:
+        sql += " AND is_active = %s"
+        args.append(is_active)
+    if q:
+        sql += " AND (name ILIKE %s OR role ILIKE %s)"
+        args += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY name"
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        return cur.fetchall()
+
+
+@app.post("/api/solver-contacts", status_code=201, tags=["Solver Contacts"],
+           summary="Tambah kontak solver baru",
+           description="Tambah kontak solver ke whitelist. Nomor WA harus unik di antara kontak aktif.")
+def create_solver_contact(
+    inp: SolverContactIn,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    phone = inp.phone_number.strip()
+    if phone.startswith("+"):
+        phone = phone[1:]
+    with db() as conn, conn.cursor() as cur:
+        # Check duplicate phone among active contacts
+        cur.execute("SELECT id FROM solver_contacts WHERE phone_number = %s AND is_active = true", (phone,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Nomor {phone} sudah terdaftar")
+        cur.execute(
+            """INSERT INTO solver_contacts (name, phone_number, role)
+               VALUES (%s, %s, %s)
+               RETURNING id, name, phone_number, role, is_active, created_at, updated_at""",
+            (inp.name.strip(), phone, inp.role.strip() if inp.role else None),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    return row
+
+
+@app.get("/api/solver-contacts/{contact_id}", tags=["Solver Contacts"],
+          summary="Detail kontak solver",
+          description="Return detail satu kontak solver berdasarkan ID.")
+def get_solver_contact(
+    contact_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM solver_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Kontak tidak ditemukan")
+    return row
+
+
+@app.put("/api/solver-contacts/{contact_id}", tags=["Solver Contacts"],
+          summary="Update kontak solver",
+          description="Update field kontak solver. Kirim hanya field yang ingin diubah.")
+def update_solver_contact(
+    contact_id: int,
+    inp: SolverContactUpdate,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM solver_contacts WHERE id = %s", (contact_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Kontak tidak ditemukan")
+        # Build dynamic update
+        updates, args = [], []
+        if inp.name is not None:
+            updates.append("name = %s")
+            args.append(inp.name.strip())
+        if inp.phone_number is not None:
+            phone = inp.phone_number.strip()
+            if phone.startswith("+"):
+                phone = phone[1:]
+            # Check duplicate
+            cur.execute("SELECT id FROM solver_contacts WHERE phone_number = %s AND is_active = true AND id != %s",
+                        (phone, contact_id))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"Nomor {phone} sudah terdaftar")
+            updates.append("phone_number = %s")
+            args.append(phone)
+        if inp.role is not None:
+            updates.append("role = %s")
+            args.append(inp.role.strip() if inp.role else None)
+        if inp.is_active is not None:
+            updates.append("is_active = %s")
+            args.append(inp.is_active)
+        if not updates:
+            raise HTTPException(status_code=422, detail="Tidak ada field yang diubah")
+        updates.append("updated_at = now()")
+        args.append(contact_id)
+        cur.execute(f"UPDATE solver_contacts SET {', '.join(updates)} WHERE id = %s RETURNING *", args)
+        row = cur.fetchone()
+        conn.commit()
+    return row
+
+
+@app.delete("/api/solver-contacts/{contact_id}", tags=["Solver Contacts"],
+             summary="Hapus kontak solver (soft delete)",
+             description="Set is_active = false. Data tetap ada di DB untuk referensi case lama.")
+def delete_solver_contact(
+    contact_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM solver_contacts WHERE id = %s AND is_active = true", (contact_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Kontak tidak ditemukan atau sudah dihapus")
+        cur.execute("UPDATE solver_contacts SET is_active = false, updated_at = now() WHERE id = %s", (contact_id,))
+        conn.commit()
     return {"ok": True}
 
 

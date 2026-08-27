@@ -454,3 +454,90 @@ class TestWebhook:
             tc = TestClient(main_module.app)
             response = tc.post("/webhooks/waha", content="not json", headers={"Content-Type": "application/json"})
             assert response.status_code == 400
+
+
+class TestSolverContacts:
+    def test_create_contact(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,  # duplicate check (no existing)
+            {"id": 1, "name": "Mas Budi", "phone_number": "6281234567890", "role": "Solusi 1", "is_active": True, "created_at": "...", "updated_at": "..."},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/solver-contacts", json={
+                "name": "Mas Budi",
+                "phone_number": "6281234567890",
+                "role": "Solusi 1",
+            })
+            assert response.status_code == 201
+            data = response.json()
+            assert data["name"] == "Mas Budi"
+            assert data["phone_number"] == "6281234567890"
+            assert data["role"] == "Solusi 1"
+
+    def test_create_contact_duplicate_phone(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # duplicate found
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/solver-contacts", json={
+                "name": "Mas Budi",
+                "phone_number": "6281234567890",
+            })
+            assert response.status_code == 409
+
+    def test_list_contacts(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            [{"id": 1, "name": "Mas Budi", "phone_number": "6281234567890", "role": "Solusi 1", "is_active": True}],
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/solver-contacts")
+            assert response.status_code == 200
+
+    def test_get_contact_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/solver-contacts/999")
+            assert response.status_code == 404
+
+    def test_update_contact(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # contact exists
+            None,  # duplicate check (no existing)
+            {"id": 1, "name": "Mas Budi Updated", "phone_number": "6281234567890", "role": "Supervisor", "is_active": True},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/solver-contacts/1", json={
+                "name": "Mas Budi Updated",
+                "role": "Supervisor",
+            })
+            assert response.status_code == 200
+
+    def test_update_contact_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/solver-contacts/999", json={"name": "Test"})
+            assert response.status_code == 404
+
+    def test_soft_delete_contact(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # contact exists
+            None,  # update
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.delete("/api/solver-contacts/1")
+            assert response.status_code == 200
+            assert response.json()["ok"] is True
+
+    def test_soft_delete_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.delete("/api/solver-contacts/999")
+            assert response.status_code == 404
