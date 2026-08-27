@@ -12,45 +12,26 @@ CASE_TYPES = ["non_order", "non_ao", "mobile"]
 CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
     "non_order": [
         ("ticket_remedy", "Ticket Remedy"),
-        ("no_indihome", "No Indihome"),
-        ("order_id", "Order ID"),
-        ("last_milestone", "Last Milestone"),
-        ("milestone_info", "Milestone Info"),
+        ("no_indihome", "Nomer Indihome"),
+        ("request_case", "Request Case"),
         ("detail_case", "Detail Case"),
-        ("evidence", "Evidence"),
-        ("grapari", "GraPARI"),
-        ("case_id", "Case ID"),
-        ("email", "Email"),
-        ("cp", "CP"),
-        ("tgl_kejadian", "Tgl Kejadian"),
-        ("status_case", "Status"),
-        ("raw_text", "Pesan Lengkap"),
+        ("link_evidence", "Link Evidence"),
     ],
     "non_ao": [
         ("ticket_remedy", "Ticket Remedy"),
-        ("no_indihome", "No Indihome"),
         ("order_id", "Order ID"),
+        ("no_indihome", "Nomer Indihome"),
+        ("last_milestone", "Last Milestone"),
+        ("request_case", "Request Case"),
         ("detail_case", "Detail Case"),
-        ("evidence", "Evidence"),
-        ("grapari", "GraPARI"),
-        ("case_id", "Case ID"),
-        ("email", "Email"),
-        ("cp", "CP"),
-        ("tgl_kejadian", "Tgl Kejadian"),
-        ("status_case", "Status"),
-        ("raw_text", "Pesan Lengkap"),
+        ("link_evidence", "Link Evidence"),
     ],
     "mobile": [
         ("ticket_remedy", "Ticket Remedy"),
-        ("no_indihome", "No Indihome"),
         ("msisdn", "MSISDN"),
-        ("tier", "Tier"),
-        ("lokasi", "Lokasi"),
+        ("request_case", "Request Case"),
         ("detail_case", "Detail Case"),
-        ("evidence", "Evidence"),
-        ("grapari", "GraPARI"),
-        ("tgl_kejadian", "Tgl Kejadian"),
-        ("raw_text", "Pesan Lengkap"),
+        ("link_evidence", "Link Evidence"),
     ],
 }
 
@@ -80,9 +61,12 @@ Asal Grapari : <nama GraPARI> (jika sumber Grapari)
 Jenis Case : Non Order
 
 Ticket Remedy : INC000000000000
-No Indihome : 000000000000
+Nomer Indihome : 0211234567
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>""",
+Link Evidence :
+<link1>
+<link2>""",
     "non_ao": """punten rekan @<nomor> mohon bantuannya untuk case Non AO ada 1 case lagi
 
 Area : <nama area>
@@ -92,9 +76,14 @@ Asal Grapari : <nama GraPARI> (jika sumber Grapari)
 Jenis Case : Non AO
 
 Ticket Remedy : INC000000000000
-No Indihome : 000000000000
+Order ID : <order id>
+Nomer Indihome : 0211234567
+Last Milestone : <last milestone>
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>""",
+Link Evidence :
+<link1>
+<link2>""",
     "mobile": """punten rekan @<nomor> mohon bantuannya untuk case Mobile ada 1 case lagi
 
 Area : <nama area>
@@ -105,8 +94,11 @@ Jenis Case : Mobile
 
 Ticket Remedy : INC000000000000
 MSISDN : 08xxxxxxxxxx
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>""",
+Link Evidence :
+<link1>
+<link2>""",
 }
 
 
@@ -158,7 +150,17 @@ def render_case_text(case_type: str, fields: dict,
 
     for key, fld_label in field_defs:
         val = fields.get(key)
-        if val is not None and str(val).strip():
-            lines.append(f"{fld_label} : {str(val).strip()}")
+        if val is not None:
+            if key == "link_evidence" and isinstance(val, list):
+                # Render array of evidence links, one per line
+                links = [str(v).strip() for v in val if v and str(v).strip()]
+                if links:
+                    lines.append(f"Link Evidence :")
+                    for link in links:
+                        lines.append(link)
+            else:
+                s = str(val).strip()
+                if s:
+                    lines.append(f"{fld_label} : {s}")
 
     return "\n".join(lines)

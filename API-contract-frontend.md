@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.3 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.4 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -459,50 +459,31 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 #### `Non Order` — Case STC/SMOOA/UFO/Other
 | Key | Label UI | Tipe |
 |---|---|---|
-| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) ★ |
-| `no_indihome` | No Indihome | text/tel ★ |
-| `order_id` | Order ID | text |
-| `last_milestone` | Last Milestone | text |
-| `milestone_info` | Milestone Info | textarea |
-| `detail_case` | Detail Case | textarea ★ |
-| `evidence` | Evidence (link) | url |
-| `grapari` | GraPARI | text |
-| `case_id` | Case ID | text |
-| `email` | Email | email |
-| `cp` | CP | tel |
-| `tgl_kejadian` | Tgl Kejadian | date/text |
-| `status_case` | Status | text |
-| `raw_text` | Pesan Lengkap | textarea |
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) |
+| `no_indihome` | Nomer Indihome | text/tel |
+| `request_case` | Request Case | text |
+| `detail_case` | Detail Case | textarea (long text) |
+| `link_evidence` | Link Evidence | array of URL (multiple links) |
 
 #### `Non AO` — Case Non Activation Order
 | Key | Label UI | Tipe |
 |---|---|---|
-| `ticket_remedy` | Ticket Remedy | text ★ |
-| `no_indihome` | No Indihome | text/tel ★ |
+| `ticket_remedy` | Ticket Remedy | text |
 | `order_id` | Order ID | text |
-| `detail_case` | Detail Case | textarea ★ |
-| `evidence` | Evidence | url |
-| `grapari` | GraPARI | text |
-| `case_id` | Case ID | text |
-| `email` | Email | email |
-| `cp` | CP | tel |
-| `tgl_kejadian` | Tgl Kejadian | date/text |
-| `status_case` | Status | text |
-| `raw_text` | Pesan Lengkap | textarea |
+| `no_indihome` | Nomer Indihome | text/tel |
+| `last_milestone` | Last Milestone | text |
+| `request_case` | Request Case | text |
+| `detail_case` | Detail Case | textarea (long text) |
+| `link_evidence` | Link Evidence | array of URL (multiple links) |
 
 #### `Mobile` — Case Mobile
 | Key | Label UI | Tipe |
 |---|---|---|
-| `ticket_remedy` | Ticket Remedy | text ★ |
-| `no_indihome` | No Indihome | text/tel |
-| `msisdn` | MSISDN | tel ★ |
-| `tier` | Tier | select (Diamond/Gold/Silver/dll) |
-| `lokasi` | Lokasi | text |
-| `detail_case` | Detail Case | textarea ★ |
-| `evidence` | Evidence | url |
-| `grapari` | GraPARI | text |
-| `tgl_kejadian` | Tgl Kejadian | date |
-| `raw_text` | Pesan Lengkap | textarea |
+| `ticket_remedy` | Ticket Remedy | text |
+| `msisdn` | MSISDN | tel |
+| `request_case` | Request Case | text |
+| `detail_case` | Detail Case | textarea (long text) |
+| `link_evidence` | Link Evidence | array of URL (multiple links) |
 
 ### Mode Textarea: Copy-Paste Wording
 
@@ -519,9 +500,12 @@ Asal Grapari : <nama GraPARI> (jika sumber Grapari)
 Jenis Case : Non Order
 
 Ticket Remedy : INC000000000000
-No Indihome : 000000000000
+Nomer Indihome : 0211234567
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>
+Link Evidence :
+<link1>
+<link2>
 ```
 
 **Placeholder Non AO:**
@@ -535,9 +519,14 @@ Asal Grapari : <nama GraPARI> (jika sumber Grapari)
 Jenis Case : Non AO
 
 Ticket Remedy : INC000000000000
-No Indihome : 000000000000
+Order ID : <order id>
+Nomer Indihome : 0211234567
+Last Milestone : <last milestone>
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>
+Link Evidence :
+<link1>
+<link2>
 ```
 
 **Placeholder Mobile:**
@@ -552,8 +541,11 @@ Jenis Case : Mobile
 
 Ticket Remedy : INC000000000000
 MSISDN : 08xxxxxxxxxx
+Request Case : <request case>
 Detail Case : <detail case>
-Evidence : <link>
+Link Evidence :
+<link1>
+<link2>
 ```
 
 ### Komponen Mention (semua jenis case)
@@ -589,6 +581,15 @@ Ditangani oleh:
 ```
 
 ## 8. Changelog
+
+### v1.4 (27 Agustus 2026)
+- **Field per jenis case disederhanakan**: Hanya field yang dibutuhkan per jenis case.
+  - Non Order: ticket_remedy, no_indihome, request_case, detail_case, link_evidence
+  - Non AO: ticket_remedy, order_id, no_indihome, last_milestone, request_case, detail_case, link_evidence
+  - Mobile: ticket_remedy, msisdn, request_case, detail_case, link_evidence
+- **`link_evidence`**: Array of URL (bukan single link). Bisa multiple evidence per case.
+- **`request_case`**: Field baru untuk deskripsi request/keperluan case.
+- **Field dihapus dari rendering**: email, cp, tgl_kejadian, status_case, raw_text, tier, lokasi, case_id, grapari, milestone_info tidak lagi ditampilkan per jenis case.
 
 ### v1.3 (27 Agustus 2026)
 - **Area & Regional**: Tabel lookup baru dengan hierarchy Area → Regional. Endpoint `GET /api/areas` dan `GET /api/areas/{id}/regionals`.
