@@ -457,33 +457,33 @@ FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Valida
 Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualitas tracking.
 
 #### `Non Order` — Case STC/SMOOA/UFO/Other
-| Key | Label UI | Tipe |
-|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) |
-| `no_indihome` | Nomer Indihome | text/tel |
-| `request_case` | Request Case | text |
-| `detail_case` | Detail Case | textarea (long text) |
-| `link_evidence` | Link Evidence | array of URL (multiple links) |
+| Key | Label UI | Tipe | Required |
+|---|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) | ✅ |
+| `no_indihome` | Nomer Indihome | text/tel | ✅ |
+| `request_case` | Request Case | text | ❌ |
+| `detail_case` | Detail Case | textarea (long text) | ❌ |
+| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
 
 #### `Non AO` — Case Non Activation Order
-| Key | Label UI | Tipe |
-|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text |
-| `order_id` | Order ID | text |
-| `no_indihome` | Nomer Indihome | text/tel |
-| `last_milestone` | Last Milestone | text |
-| `request_case` | Request Case | text |
-| `detail_case` | Detail Case | textarea (long text) |
-| `link_evidence` | Link Evidence | array of URL (multiple links) |
+| Key | Label UI | Tipe | Required |
+|---|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text | ✅ |
+| `order_id` | Order ID | text | ✅ |
+| `no_indihome` | Nomer Indihome | text/tel | ✅ |
+| `last_milestone` | Last Milestone | text | ❌ |
+| `request_case` | Request Case | text | ❌ |
+| `detail_case` | Detail Case | textarea (long text) | ❌ |
+| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
 
 #### `Mobile` — Case Mobile
-| Key | Label UI | Tipe |
-|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text |
-| `msisdn` | MSISDN | tel |
-| `request_case` | Request Case | text |
-| `detail_case` | Detail Case | textarea (long text) |
-| `link_evidence` | Link Evidence | array of URL (multiple links) |
+| Key | Label UI | Tipe | Required |
+|---|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text | ✅ |
+| `msisdn` | MSISDN | tel | ✅ |
+| `request_case` | Request Case | text | ❌ |
+| `detail_case` | Detail Case | textarea (long text) | ❌ |
+| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
 
 ### Mode Textarea: Copy-Paste Wording
 

@@ -7,8 +7,14 @@ into a WhatsApp-friendly text format.
 # New case types (v1.2)
 CASE_TYPES = ["non_order", "non_ao", "mobile"]
 
+# Required fields per jenis_case (validated in backend)
+REQUIRED_FIELDS: dict[str, set[str]] = {
+    "non_order": {"ticket_remedy", "no_indihome"},
+    "non_ao": {"ticket_remedy", "order_id", "no_indihome"},
+    "mobile": {"ticket_remedy", "msisdn"},
+}
+
 # Field labels per jenis_case — order matters for rendering
-# These are the "old" fields that are still kept but all optional
 CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
     "non_order": [
         ("ticket_remedy", "Ticket Remedy"),

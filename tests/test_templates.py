@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from templates import CASE_TYPES, render_case_text, render_header, CASE_FIELDS, TYPE_LABELS
+from templates import CASE_TYPES, render_case_text, render_header, CASE_FIELDS, TYPE_LABELS, REQUIRED_FIELDS
 
 
 def test_case_types_list():
@@ -320,3 +320,26 @@ def test_case_fields_field_keys_mobile():
     """Mobile field keys should match expected list."""
     keys = [k for k, _ in CASE_FIELDS["mobile"]]
     assert keys == ["ticket_remedy", "msisdn", "request_case", "detail_case", "link_evidence"]
+
+
+def test_required_fields_non_order():
+    """Non Order required: ticket_remedy, no_indihome."""
+    assert REQUIRED_FIELDS["non_order"] == {"ticket_remedy", "no_indihome"}
+
+
+def test_required_fields_non_ao():
+    """Non AO required: ticket_remedy, order_id, no_indihome."""
+    assert REQUIRED_FIELDS["non_ao"] == {"ticket_remedy", "order_id", "no_indihome"}
+
+
+def test_required_fields_mobile():
+    """Mobile required: ticket_remedy, msisdn."""
+    assert REQUIRED_FIELDS["mobile"] == {"ticket_remedy", "msisdn"}
+
+
+def test_required_fields_subset_of_case_fields():
+    """All required fields must exist in CASE_FIELDS."""
+    for case_type, req in REQUIRED_FIELDS.items():
+        field_keys = {k for k, _ in CASE_FIELDS[case_type]}
+        for rf in req:
+            assert rf in field_keys, f"Required field '{rf}' not in CASE_FIELDS for {case_type}"
