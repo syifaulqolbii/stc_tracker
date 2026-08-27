@@ -1,9 +1,9 @@
-"""Moban FU Case Tracker v1.1 — single group, reply-chain traversal.
+"""Moban FU Case Tracker v1.2 — single group, reply-chain traversal.
 
-Perubahan dari v1.0: tidak ada lagi multi-group/case_hops. Semua pesan grup
-direkam ke wa_messages beserta quoted_id (parent), lalu pencocokan pesan
-masuk dilakukan via waterfall: regex INC -> reply langsung -> chain traversal
--> LLM fallback.
+Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
+Field lama tetap ada, semua opsional. Area → Regional hierarchy.
+Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
+Asal Grapari: text input (tidak disimpan di tabel terpisah).
 """
 
 import asyncio
@@ -18,13 +18,16 @@ from contextlib import asynccontextmanager
 import httpx
 import psycopg
 import psycopg_pool
-from fastapi import FastAPI, Request, Response, HTTPException, Depends
+from fastapi import FastAPI, Query, Request, Response, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from psycopg.rows import dict_row
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from templates import CASE_TYPES, render_case_text, render_header
+from templates import (
+    CASE_TYPES, LEGACY_CASE_TYPE_MAP,
+    render_case_text, render_header,
+)
 
 # Structured logging
 logging.basicConfig(
@@ -58,7 +61,24 @@ async def lifespan(app: FastAPI):
     await _fetch_contacts()
     yield
 
-app = FastAPI(title="Moban FU Tracker", docs_url="/docs", redoc_url="/redoc", lifespan=lifespan)
+app = FastAPI(
+    title="Moban FU Tracker",
+    description=(
+        "Backend API untuk Moban FU Case Tracker v1.2. "
+        "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
+        "Area/Regional hierarchy, dan Sumber Ticket/Jenis Case dari tabel lookup."
+    ),
+    version="1.2.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+    openapi_tags=[
+        {"name": "Cases", "description": "CRUD dan manajemen case"},
+        {"name": "Lookup", "description": "Data referensi: Area, Regional, Sumber Ticket, Jenis Case"},
+        {"name": "Webhooks", "description": "Webhook receiver dari WAHA (WhatsApp HTTP API)"},
+        {"name": "System", "description": "Health check dan operasi sistem"},
+    ],
+)
 
 # CORS — allow frontend origins
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -330,6 +350,39 @@ def link_and_update(case_id, wa_mid, author, body, status, note, source, confide
         conn.commit()
 
 
+# ---------------------------------------------------------------- Lookup helpers
+
+def _resolve_sumber_ticket(name: str | None) -> int | None:
+    """Resolve sumber ticket name to ID. Returns None if not found."""
+    if not name:
+        return None
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM sumber_tickets WHERE name = %s", (name.strip(),))
+        row = cur.fetchone()
+        return row["id"] if row else None
+
+
+def _resolve_jenis_case(name: str | None) -> int | None:
+    """Resolve jenis case name to ID. Returns None if not found."""
+    if not name:
+        return None
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM jenis_cases WHERE name = %s", (name.strip(),))
+        row = cur.fetchone()
+        return row["id"] if row else None
+
+
+def _resolve_jenis_case_name(name: str | None) -> str:
+    """Normalize jenis case name. Maps legacy names to new ones."""
+    if not name:
+        return "non_order"
+    name = name.strip().lower().replace(" ", "_")
+    if name in CASE_TYPES:
+        return name
+    # Try legacy mapping
+    return LEGACY_CASE_TYPE_MAP.get(name, "non_order")
+
+
 # ---------------------------------------------------------------- LLM fallback
 
 def _strip_markdown_json(raw: str) -> str:
@@ -521,20 +574,24 @@ def handle_ack(p: dict):
         conn.commit()
 
 
-# ---------------------------------------------------------------- API
+# ---------------------------------------------------------------- API Models
 
 class Mention(BaseModel):
-    number: str
-    name: str | None = None
+    number: str = Field(..., description="Nomor WA format internasional tanpa + (contoh: 6281234567890)")
+    name: str | None = Field(None, description="Nama kontak (opsional, hanya untuk tampilan)")
 
 class CaseIn(BaseModel):
-    case_type: str = "other"
-    fields: dict = {}
-    mentions: list[Mention] = []
+    area_id: int | None = Field(None, description="ID Area. Lihat GET /api/areas")
+    regional_id: int | None = Field(None, description="ID Regional (tergantung Area). Lihat GET /api/areas/{area_id}/regionals")
+    sumber_ticket: str | None = Field(None, description="Sumber Ticket: STC, Grapari, atau Web IT. Lihat GET /api/sumber-tickets")
+    jenis_case: str | None = Field(None, description="Jenis Case: Non Order, Non AO, atau Mobile. Lihat GET /api/jenis-cases")
+    asal_grapari: str | None = Field(None, description="Asal GraPARI (hanya jika Sumber Ticket = Grapari). Free text.")
+    mentions: list[Mention] = Field([], description="Daftar kontak solver yang akan di-mention di grup WA")
+    fields: dict = Field({}, description="Field case lama (semua opsional): ticket_remedy, no_indihome, detail_case, evidence, dll")
 
 class StatusIn(BaseModel):
-    status: str
-    note: str | None = None
+    status: str = Field(..., description="Status baru: open, in_progress, done, issue")
+    note: str | None = Field(None, description="Catatan opsional untuk update status")
 
 
 class WahaId(BaseModel):
@@ -563,31 +620,69 @@ class WahaWebhook(BaseModel):
     payload: WahaPayload | dict | None = None
 
 
-@app.post("/api/cases", status_code=201)
-async def create_case(inp: CaseIn, request: Request, _auth: str = Depends(verify_api_key), _rate: None = Depends(check_rate_limit)):
-    if inp.case_type not in CASE_TYPES:
-        inp.case_type = "other"
+# ---------------------------------------------------------------- Cases API
+
+@app.post("/api/cases", status_code=201, tags=["Cases"],
+          summary="Buat & kirim case ke grup WA",
+          description="Buat case baru dengan field Area, Regional, Sumber Ticket, Jenis Case. Field lama juga opsional.")
+async def create_case(inp: CaseIn, request: Request,
+                      _auth: str = Depends(verify_api_key),
+                      _rate: None = Depends(check_rate_limit)):
+    # Resolve jenis_case name → internal key
+    jenis_key = _resolve_jenis_case_name(inp.jenis_case)
+    jenis_case_id = _resolve_jenis_case(inp.jenis_case)
+    sumber_ticket_id = _resolve_sumber_ticket(inp.sumber_ticket)
+
     f = inp.fields
     case_code = (f.get("ticket_remedy") or f.get("case_id") or "").strip().upper() or None
 
-    header = render_header([m.model_dump() for m in inp.mentions], inp.case_type) if inp.mentions else ""
-    body_text = render_case_text(inp.case_type, f)
+    # Resolve names for template rendering
+    area_name = None
+    regional_name = None
+    with db() as conn, conn.cursor() as cur:
+        if inp.area_id:
+            cur.execute("SELECT name FROM areas WHERE id = %s", (inp.area_id,))
+            row = cur.fetchone()
+            if row:
+                area_name = row["name"]
+        if inp.regional_id:
+            cur.execute("SELECT name FROM regionals WHERE id = %s", (inp.regional_id,))
+            row = cur.fetchone()
+            if row:
+                regional_name = row["name"]
+
+    header = render_header([m.model_dump() for m in inp.mentions], jenis_key) if inp.mentions else ""
+    body_text = render_case_text(
+        jenis_key, f,
+        area_name=area_name,
+        regional_name=regional_name,
+        sumber_ticket=inp.sumber_ticket,
+        asal_grapari=inp.asal_grapari,
+    )
     text = f"{header}\n\n{body_text}" if header else body_text
 
     wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None)
 
     with db() as conn, conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO cases (case_code, case_type, title, fields, message_text, wa_message_id)
-               VALUES (%s,%s,%s,%s,%s,%s)
+            """INSERT INTO cases (case_code, case_type, title, fields, message_text, wa_message_id,
+                                  area_id, regional_id, sumber_ticket_id, jenis_case_id, asal_grapari)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (case_code) DO UPDATE
                  SET wa_message_id = EXCLUDED.wa_message_id,
                      message_text  = EXCLUDED.message_text,
+                     area_id       = EXCLUDED.area_id,
+                     regional_id   = EXCLUDED.regional_id,
+                     sumber_ticket_id = EXCLUDED.sumber_ticket_id,
+                     jenis_case_id = EXCLUDED.jenis_case_id,
+                     asal_grapari  = EXCLUDED.asal_grapari,
                      status        = 'open',
                      updated_at    = now()
                RETURNING id, case_code""",
-            (case_code, inp.case_type, f.get("detail_case", "")[:120],
-             json.dumps(f), text, wa_mid),
+            (case_code, jenis_key, f.get("detail_case", "")[:120],
+             json.dumps(f), text, wa_mid,
+             inp.area_id, inp.regional_id, sumber_ticket_id,
+             jenis_case_id, inp.asal_grapari),
         )
         row = cur.fetchone()
         cur.execute(
@@ -599,26 +694,71 @@ async def create_case(inp: CaseIn, request: Request, _auth: str = Depends(verify
     return {"id": row["id"], "case_code": row["case_code"], "wa_message_id": wa_mid, "text": text}
 
 
-@app.get("/api/cases")
-def list_cases(request: Request, status: str | None = None, case_type: str | None = None, q: str | None = None, _auth: str = Depends(verify_api_key), _rate: None = Depends(check_rate_limit)):
-    sql = "SELECT id, case_code, case_type, title, status, ack, created_at, updated_at FROM cases WHERE true"
-    args = []
+@app.get("/api/cases", tags=["Cases"],
+         summary="Daftar case (dashboard list)",
+         description="List semua case dengan filter opsional. Diurutkan updated_at DESC.")
+def list_cases(
+    request: Request,
+    status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
+    area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
+    regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
+    sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
+    q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
+                    c.created_at, c.updated_at,
+                    c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
+                    a.name AS area_name, r.name AS regional_name,
+                    st.name AS sumber_ticket_name, jc.name AS jenis_case_name
+             FROM cases c
+             LEFT JOIN areas a ON c.area_id = a.id
+             LEFT JOIN regionals r ON c.regional_id = r.id
+             LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
+             LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
+             WHERE true"""
+    args: list = []
     if status:
-        sql += " AND status = %s"; args.append(status)
+        sql += " AND c.status = %s"
+        args.append(status)
     if case_type:
-        sql += " AND case_type = %s"; args.append(case_type)
+        sql += " AND jc.name = %s"
+        args.append(case_type)
+    if area_id:
+        sql += " AND c.area_id = %s"
+        args.append(area_id)
+    if regional_id:
+        sql += " AND c.regional_id = %s"
+        args.append(regional_id)
+    if sumber_ticket:
+        sql += " AND st.name = %s"
+        args.append(sumber_ticket)
     if q:
-        sql += " AND (case_code ILIKE %s OR title ILIKE %s)"; args += [f"%{q}%", f"%{q}%"]
-    sql += " ORDER BY updated_at DESC"
+        sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
+        args += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY c.updated_at DESC"
     with db() as conn, conn.cursor() as cur:
         cur.execute(sql, args)
         return cur.fetchall()
 
 
-@app.get("/api/cases/{case_id}")
-def case_detail(case_id: int, request: Request, _auth: str = Depends(verify_api_key), _rate: None = Depends(check_rate_limit)):
+@app.get("/api/cases/{case_id}", tags=["Cases"],
+         summary="Detail case + timeline rantai",
+         description="Return detail case, semua pesan (timeline), progress updates, dan daftar peserta.")
+def case_detail(case_id: int, request: Request,
+                _auth: str = Depends(verify_api_key),
+                _rate: None = Depends(check_rate_limit)):
     with db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
+        cur.execute("""SELECT c.*, a.name AS area_name, r.name AS regional_name,
+                              st.name AS sumber_ticket_name, jc.name AS jenis_case_name
+                       FROM cases c
+                       LEFT JOIN areas a ON c.area_id = a.id
+                       LEFT JOIN regionals r ON c.regional_id = r.id
+                       LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
+                       LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
+                       WHERE c.id = %s""", (case_id,))
         case = cur.fetchone()
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
@@ -642,8 +782,12 @@ def case_detail(case_id: int, request: Request, _auth: str = Depends(verify_api_
     return {"case": case, "messages": messages, "updates": updates, "participants": participants}
 
 
-@app.post("/api/cases/{case_id}/status")
-def set_status(case_id: int, inp: StatusIn, request: Request, _auth: str = Depends(verify_api_key), _rate: None = Depends(check_rate_limit)):
+@app.post("/api/cases/{case_id}/status", tags=["Cases"],
+          summary="Koreksi status case manual",
+          description="Update status case secara manual. Berguna untuk tombol 'Tandai selesai' / 'Buka ulang' di UI.")
+def set_status(case_id: int, inp: StatusIn, request: Request,
+               _auth: str = Depends(verify_api_key),
+               _rate: None = Depends(check_rate_limit)):
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM cases WHERE id = %s", (case_id,))
         if not cur.fetchone():
@@ -659,7 +803,72 @@ def set_status(case_id: int, inp: StatusIn, request: Request, _auth: str = Depen
     return {"ok": True}
 
 
-@app.post("/webhooks/waha")
+# ---------------------------------------------------------------- Lookup API
+
+@app.get("/api/areas", tags=["Lookup"],
+         summary="Daftar semua Area",
+         description="Return list semua Area yang tersedia di database.")
+def list_areas(
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, name FROM areas ORDER BY name")
+        return cur.fetchall()
+
+
+@app.get("/api/areas/{area_id}/regionals", tags=["Lookup"],
+         summary="Daftar Regional berdasarkan Area",
+         description="Return list Regional yang ada di bawah Area tertentu.")
+def list_regionals(
+    area_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        # Verify area exists
+        cur.execute("SELECT id, name FROM areas WHERE id = %s", (area_id,))
+        area = cur.fetchone()
+        if not area:
+            raise HTTPException(status_code=404, detail="Area not found")
+        cur.execute("SELECT id, name FROM regionals WHERE area_id = %s ORDER BY name", (area_id,))
+        regionals = cur.fetchall()
+    return {"area": area, "regionals": regionals}
+
+
+@app.get("/api/sumber-tickets", tags=["Lookup"],
+         summary="Daftar Sumber Ticket",
+         description="Return list sumber ticket: STC, Grapari, Web IT.")
+def list_sumber_tickets(
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, name FROM sumber_tickets ORDER BY name")
+        return cur.fetchall()
+
+
+@app.get("/api/jenis-cases", tags=["Lookup"],
+         summary="Daftar Jenis Case",
+         description="Return list jenis case: Non Order, Non AO, Mobile.")
+def list_jenis_cases(
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, name FROM jenis_cases ORDER BY name")
+        return cur.fetchall()
+
+
+# ---------------------------------------------------------------- Webhooks
+
+@app.post("/webhooks/waha", tags=["Webhooks"],
+          summary="Webhook receiver dari WAHA",
+          description="Menerima event dari WAHA: message, message.ack, dll.")
 async def waha_webhook(req: Request):
     try:
         data = await req.json()
@@ -676,8 +885,17 @@ async def waha_webhook(req: Request):
     return {"ok": True}
 
 
-@app.post("/api/crawl")
-async def crawl_group(limit: int = 200, request: Request = None, _auth: str = Depends(verify_api_key), _rate: None = Depends(check_rate_limit)):
+# ---------------------------------------------------------------- Crawl & System
+
+@app.post("/api/crawl", tags=["System"],
+          summary="Backfill histori grup WA",
+          description="Dua pass: simpan semua pesan dulu (rantai lengkap), baru proses dengan waterfall matching.")
+async def crawl_group(
+    limit: int = Query(200, description="Jumlah pesan histori yang diambil"),
+    request: Request = None,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
     """Dua pass: simpan semua pesan dulu (rantai lengkap), baru proses.
     
     Pass 1: Store all messages (for complete chain traversal).
@@ -727,7 +945,9 @@ async def crawl_group(limit: int = 200, request: Request = None, _auth: str = De
     }
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"],
+         summary="Health check",
+         description="Cek status koneksi database dan WAHA service. Tidak perlu auth.")
 async def health():
     out = {"status": "ok", "db": "unknown", "waha": "unknown"}
     try:

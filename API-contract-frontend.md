@@ -1,7 +1,7 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.2 · **Tanggal:** 20 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
-**Referensi:** PRD v1.1, schema-v1-1.sql
+**Versi:** 1.3 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
 
@@ -20,16 +20,37 @@
 
 ## 2. Enum & Konstanta
 
-| Field | Nilai |
-|---|---| 
-| `case_type` | `stc` · `smooa` · `mobile` · `ufo` · `other` |
-| `status` (case) | `open` · `in_progress` · `done` · `issue` |
-| `ack` (pesan keluar) | `PENDING` · `SERVER` · `DEVICE` · `READ` — progresif, pakai yang terakhir |
-| `source` (update) | `rule` · `reply` · `chain` · `llm` · `crawl` · `manual` |
+### Jenis Case (tabel lookup `jenis_cases`)
+| Nilai | Keterangan |
+|---|---|
+| `Non Order` | Case non-order (STC, SMOOA, UFO, dll) |
+| `Non AO` | Case non-activation order |
+| `Mobile` | Case mobile |
 
-Saran mapping badge status di UI: `open` → abu, `in_progress` → biru, `done` → hijau, `issue` → merah.
+### Sumber Ticket (tabel lookup `sumber_tickets`)
+| Nilai | Keterangan |
+|---|---|
+| `STC` | Sumber dari STC |
+| `Grapari` | Sumber dari GraPARI (wajib input Asal Grapari) |
+| `Web IT` | Sumber dari Web IT |
 
-### Source Labels
+### Status Case
+| Nilai | Badge |
+|---|---|
+| `open` | Abu |
+| `in_progress` | Biru |
+| `done` | Hijau |
+| `issue` | Merah |
+
+### Ack (pesan keluar)
+| Nilai | Keterangan |
+|---|---|
+| `PENDING` | Belum terkirim |
+| `SERVER` | Diterima server |
+| `DEVICE` | Diterima device |
+| `READ` | Sudah dibaca |
+
+### Source Labels (progress_updates)
 | Source | Keterangan | Contoh |
 |---|---|---|
 | `rule` | Pesan mengandung kode INC yang match dengan case yang sedang open | "INC000023470570 sudah done" |
@@ -38,6 +59,8 @@ Saran mapping badge status di UI: `open` → abu, `in_progress` → biru, `done`
 | `llm` | Tidak match regex/chain, tapi LLM mendeteksi case + status | Pesan bebas yang mengandung info tiket |
 | `crawl` | Diproses dari backfill histori grup | `POST /api/crawl` |
 | `manual` | Diubah manual via API | `POST /api/cases/{id}/status` |
+
+---
 
 ## 3. Endpoints
 
@@ -52,7 +75,11 @@ Content-Type: application/json
 **Request:**
 ```json
 {
-  "case_type": "stc",
+  "area_id": 1,
+  "regional_id": 2,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "Non Order",
+  "asal_grapari": "GraPARI Bandung",
   "mentions": [
     { "number": "6281113021236", "name": "Mas Habib Spv Tsel" }
   ],
@@ -69,17 +96,25 @@ Content-Type: application/json
 ```
 
 Aturan:
-- `case_type` wajib; nilai di luar enum di-downgrade ke `other`.
-- `fields` — semua key opsional; yang kosong tidak muncul di teks WA. Lihat §5 untuk daftar key per `case_type`.
+- Semua field **opsional**. Field baru (`area_id`, `regional_id`, `sumber_ticket`, `jenis_case`, `asal_grapari`) dan field lama (`ticket_remedy`, `no_indihome`, dll) semuanya tidak wajib diisi.
+- `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
+- `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
+- `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih.
+- `fields` — semua key opsional; yang kosong tidak muncul di teks WA.
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan teks.
-- `case_code` diturunkan backend dari `fields.ticket_remedy` atau `fields.case_id`. Bisa `null` untuk `case_type=other` tanpa tiket — FE pakai fallback tampilan `#<id>`.
+- `case_code` diturunkan backend dari `fields.ticket_remedy` atau `fields.case_id`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
 
 **Format pesan WhatsApp (otomatis):**
 ```
-punten rekan @6281113021236 mohon bantuannya untuk case STC ada 1 case lagi
+punten rekan @6281113021236 mohon bantuannya untuk case Non Order ada 1 case lagi
 
-#STC
+#Non Order
+Area : Area 1
+Regional : Regional 2
+Sumber Ticket : Grapari
+Asal Grapari : GraPARI Bandung
+Jenis Case : Non Order
 Ticket Remedy : INC000023470570
 No Indihome : 142401135588
 ...
@@ -93,7 +128,7 @@ No Indihome : 142401135588
   "id": 42,
   "case_code": "INC000023470570",
   "wa_message_id": "true_120363xxx@g.us_3EB0A1B2C3",
-  "text": "punten rekan @6281113021236 mohon bantuannya untuk case STC ada 1 case lagi\n\n#STC\nTicket Remedy : INC000023470570\n..."
+  "text": "punten rekan @6281113021236 mohon bantuannya untuk case Non Order ada 1 case lagi\n\n#Non Order\nArea : Area 1\n..."
 }
 ```
 `text` adalah pesan final persis yang terkirim ke grup — tampilkan di toast/modal sukses sebagai bukti.
@@ -114,7 +149,10 @@ X-API-Key: <key>
 | Param | Contoh | Keterangan |
 |---|---|---| 
 | `status` | `open` | filter enum status |
-| `case_type` | `stc` | filter jenis case |
+| `case_type` | `Non Order` | filter jenis case (nama dari tabel lookup) |
+| `area_id` | `1` | filter berdasarkan Area ID |
+| `regional_id` | `2` | filter berdasarkan Regional ID |
+| `sumber_ticket` | `Grapari` | filter sumber ticket |
 | `q` | `INC0000234` | pencarian substring di `case_code` dan `title` (case-insensitive) |
 
 **Response `200`:**
@@ -123,10 +161,19 @@ X-API-Key: <key>
   {
     "id": 42,
     "case_code": "INC000023470570",
-    "case_type": "stc",
+    "case_type": "non_order",
     "title": "Moban dibantu add subsnya di domain/realm telkom.net...",
     "status": "in_progress",
     "ack": "READ",
+    "area_id": 1,
+    "regional_id": 2,
+    "sumber_ticket_id": 2,
+    "jenis_case_id": 1,
+    "asal_grapari": "GraPARI Bandung",
+    "area_name": "Area 1",
+    "regional_name": "Regional 2",
+    "sumber_ticket_name": "Grapari",
+    "jenis_case_name": "Non Order",
     "created_at": "2026-08-19T09:14:02+07:00",
     "updated_at": "2026-08-19T10:31:55+07:00"
   }
@@ -149,13 +196,22 @@ X-API-Key: <key>
   "case": {
     "id": 42,
     "case_code": "INC000023470570",
-    "case_type": "stc",
+    "case_type": "non_order",
     "title": "...",
     "fields": { "ticket_remedy": "INC000023470570", "...": "..." },
     "message_text": "punten rekan ...",
     "wa_message_id": "true_120363xxx@g.us_3EB0A1B2C3",
     "status": "done",
     "ack": "READ",
+    "area_id": 1,
+    "regional_id": 2,
+    "sumber_ticket_id": 2,
+    "jenis_case_id": 1,
+    "asal_grapari": "GraPARI Bandung",
+    "area_name": "Area 1",
+    "regional_name": "Regional 2",
+    "sumber_ticket_name": "Grapari",
+    "jenis_case_name": "Non Order",
     "created_at": "...",
     "updated_at": "..."
   },
@@ -293,7 +349,86 @@ Berguna untuk banner "sistem gangguan" di UI. Nilai selain `ok` pada `db`/`waha`
 
 ---
 
-## 4. Format Error
+## 4. Lookup Endpoints
+
+### 4.1 `GET /api/areas` — Daftar semua Area
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Response `200`:**
+```json
+[
+  { "id": 1, "name": "Area 1" },
+  { "id": 2, "name": "Area 2" },
+  { "id": 3, "name": "Area 3" }
+]
+```
+
+---
+
+### 4.2 `GET /api/areas/{area_id}/regionals` — Daftar Regional per Area
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Response `200`:**
+```json
+{
+  "area": { "id": 1, "name": "Area 1" },
+  "regionals": [
+    { "id": 1, "name": "Regional 1" },
+    { "id": 2, "name": "Regional 2" },
+    { "id": 3, "name": "Regional 3" }
+  ]
+}
+```
+
+**Error:** `404 { "detail": "Area not found" }`.
+
+---
+
+### 4.3 `GET /api/sumber-tickets` — Daftar Sumber Ticket
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Response `200`:**
+```json
+[
+  { "id": 1, "name": "STC" },
+  { "id": 2, "name": "Grapari" },
+  { "id": 3, "name": "Web IT" }
+]
+```
+
+---
+
+### 4.4 `GET /api/jenis-cases` — Daftar Jenis Case
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Response `200`:**
+```json
+[
+  { "id": 1, "name": "Non Order" },
+  { "id": 2, "name": "Non AO" },
+  { "id": 3, "name": "Mobile" }
+]
+```
+
+---
+
+## 5. Format Error
 
 FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Validasi body gagal → `422` dengan `detail` berisi array lokasi field. FE cukup menampilkan `detail` apa adanya.
 
@@ -305,77 +440,139 @@ FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Valida
 | `429` | Rate limit terlampaui (default 60 req/menit per IP) |
 | `502` | WAHA tidak terjangkau atau session tidak WORKING |
 
-## 5. Spesifikasi Form Dinamis (per `case_type`)
+## 6. Spesifikasi Form Dinamis
 
-Form utama = dropdown **Jenis Case** + field yang berubah mengikuti tabel ini. Semua field **opsional** secara API, tapi kolom bertanda ★ disarankan wajib di UI demi kualitas tracking.
+### Alur Form Input
+1. **Pilih Area** → dropdown `GET /api/areas`
+2. **Pilih Regional** → dropdown `GET /api/areas/{area_id}/regionals` (muncul setelah Area dipilih)
+3. **Pilih Sumber Ticket** → dropdown `GET /api/sumber-tickets` (STC / Grapari / Web IT)
+4. **Asal Grapari** → text input (hanya muncul jika Sumber Ticket = Grapari)
+5. **Pilih Jenis Case** → dropdown `GET /api/jenis-cases` (Non Order / Non AO / Mobile)
+6. **Input fields** → dua mode:
+   - **Mode Form:** Isi field-field per jenis case (semua opsional)
+   - **Mode Textarea:** Copy-paste langsung wording case
 
-### `stc` — Case STC (milestone Indihome)
-| Key | Label UI | Tipe | |
-|---|---|---|---| 
-| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) | ★ |
-| `no_indihome` | No Indihome | text/tel | ★ |
-| `order_id` | Order ID | text | |
-| `last_milestone` | Last Milestone | text | ★ |
-| `milestone_info` | Milestone Info | textarea | |
-| `detail_case` | Detail Case | textarea | ★ |
-| `evidence` | Evidence (link) | url | |
+### Mode Form: Field per Jenis Case
 
-### `smooa` — Case SMOOA / GraPARI
-| Key | Label UI | Tipe | |
-|---|---|---|---| 
-| `grapari` | GraPARI | text | ★ |
-| `ticket_remedy` | Ticket Remedy | text | ★ |
-| `no_indihome` | No IH | text/tel | |
-| `nama_pelanggan` | Nama Pelanggan | text | |
-| `cp` | CP | tel | |
-| `email` | Email | email | |
-| `tgl_kejadian` | Tgl Kejadian | date/text | |
-| `detail_case` | Case / Detail | textarea | ★ |
-| `evidence` | Capture Lightspeed | url | |
-| `smooa_parent` | No SMOOA Parent | tel | |
-| `smooa_child` | No SMOOA Child | text (bisa koma-multi) | |
+Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualitas tracking.
 
-### `mobile` — Case Mobile
-| Key | Label UI | Tipe | |
-|---|---|---|---| 
-| `grapari` | GraPARI | text | ★ |
-| `ticket_remedy` | Ticket Remedy | text | ★ |
-| `tier` | Tier | select (Diamond/Gold/Silver/dll) | |
-| `msisdn` | MSISDN | tel | ★ |
-| `tgl_kejadian` | Tanggal Kejadian | date | |
-| `lokasi` | Lokasi | text | |
-| `detail_case` | Detail Kejadian | textarea | ★ |
-| `evidence` | Evidence | url | |
-
-### `ufo` — Case UFO / Order
-| Key | Label UI | Tipe | |
-|---|---|---|---| 
-| `grapari` | GraPARI | text | ★ |
-| `case_id` | Case ID | text | ★ |
-| `no_indihome` | Nomor Indihome | text/tel | |
-| `email` | Email | email | |
-| `cp` | CP Pelanggan | tel | |
-| `tgl_kejadian` | Tgl Kejadian | date | |
-| `order_id` | Order ID | text | |
-| `status_case` | Status | text (mis. OPEN) | |
-| `detail_case` | Detail Keperluan | textarea | ★ |
-| `evidence` | Evidence | url | |
-
-### `other`
+#### `Non Order` — Case STC/SMOOA/UFO/Other
 | Key | Label UI | Tipe |
-|---|---|---| 
-| `raw_text` | Pesan lengkap | textarea |
+|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) ★ |
+| `no_indihome` | No Indihome | text/tel ★ |
+| `order_id` | Order ID | text |
+| `last_milestone` | Last Milestone | text |
+| `milestone_info` | Milestone Info | textarea |
+| `detail_case` | Detail Case | textarea ★ |
+| `evidence` | Evidence (link) | url |
+| `grapari` | GraPARI | text |
+| `case_id` | Case ID | text |
+| `email` | Email | email |
+| `cp` | CP | tel |
+| `tgl_kejadian` | Tgl Kejadian | date/text |
+| `status_case` | Status | text |
+| `raw_text` | Pesan Lengkap | textarea |
+
+#### `Non AO` — Case Non Activation Order
+| Key | Label UI | Tipe |
+|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text ★ |
+| `no_indihome` | No Indihome | text/tel ★ |
+| `order_id` | Order ID | text |
+| `detail_case` | Detail Case | textarea ★ |
+| `evidence` | Evidence | url |
+| `grapari` | GraPARI | text |
+| `case_id` | Case ID | text |
+| `email` | Email | email |
+| `cp` | CP | tel |
+| `tgl_kejadian` | Tgl Kejadian | date/text |
+| `status_case` | Status | text |
+| `raw_text` | Pesan Lengkap | textarea |
+
+#### `Mobile` — Case Mobile
+| Key | Label UI | Tipe |
+|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text ★ |
+| `no_indihome` | No Indihome | text/tel |
+| `msisdn` | MSISDN | tel ★ |
+| `tier` | Tier | select (Diamond/Gold/Silver/dll) |
+| `lokasi` | Lokasi | text |
+| `detail_case` | Detail Case | textarea ★ |
+| `evidence` | Evidence | url |
+| `grapari` | GraPARI | text |
+| `tgl_kejadian` | Tgl Kejadian | date |
+| `raw_text` | Pesan Lengkap | textarea |
+
+### Mode Textarea: Copy-Paste Wording
+
+Untuk setiap jenis case, tersedia placeholder wording yang bisa dicopy-paste. User tinggal ganti data sesuai case.
+
+**Placeholder Non Order:**
+```
+punten rekan @<nomor> mohon bantuannya untuk case Non Order ada 1 case lagi
+
+Area : <nama area>
+Regional : <nama regional>
+Sumber Ticket : <STC/Grapari/Web IT>
+Asal Grapari : <nama GraPARI> (jika sumber Grapari)
+Jenis Case : Non Order
+
+Ticket Remedy : INC000000000000
+No Indihome : 000000000000
+Detail Case : <detail case>
+Evidence : <link>
+```
+
+**Placeholder Non AO:**
+```
+punten rekan @<nomor> mohon bantuannya untuk case Non AO ada 1 case lagi
+
+Area : <nama area>
+Regional : <nama regional>
+Sumber Ticket : <STC/Grapari/Web IT>
+Asal Grapari : <nama GraPARI> (jika sumber Grapari)
+Jenis Case : Non AO
+
+Ticket Remedy : INC000000000000
+No Indihome : 000000000000
+Detail Case : <detail case>
+Evidence : <link>
+```
+
+**Placeholder Mobile:**
+```
+punten rekan @<nomor> mohon bantuannya untuk case Mobile ada 1 case lagi
+
+Area : <nama area>
+Regional : <nama regional>
+Sumber Ticket : <STC/Grapari/Web IT>
+Asal Grapari : <nama GraPARI> (jika sumber Grapari)
+Jenis Case : Mobile
+
+Ticket Remedy : INC000000000000
+MSISDN : 08xxxxxxxxxx
+Detail Case : <detail case>
+Evidence : <link>
+```
 
 ### Komponen Mention (semua jenis case)
 - Multi-select kontak → dikirim sebagai `mentions: [{number, name}]`.
 - Saran: daftar kontak solver di-hardcode di FE dulu (atau tabel config nanti), user tinggal centang.
 
-## 6. Alur Integrasi yang Disarankan
+## 7. Alur Integrasi yang Disarankan
 
-1. **Form input:** render field per §5 → submit `POST /api/cases` → tampilkan `text` dari response sebagai konfirmasi "pesan terkirim ke grup".
-2. **Dashboard:** `GET /api/cases` (+filter) → tabel dengan badge status & indikator ack. Polling 30 dtk.
-3. **Detail:** klik baris → `GET /api/cases/{id}` → render thread `messages` + sidebar `updates` + chip `participants` dengan nama.
-4. **Aksi:** tombol koreksi status → `POST /api/cases/{id}/status` → refresh detail.
+1. **Load lookup data saat init:**
+   - `GET /api/areas` → populate dropdown Area
+   - `GET /api/sumber-tickets` → populate dropdown Sumber Ticket
+   - `GET /api/jenis-cases` → populate dropdown Jenis Case
+2. **Dynamic dropdown:**
+   - User pilih Area → `GET /api/areas/{id}/regionals` → populate dropdown Regional
+   - User pilih Sumber Ticket = Grapari → tampilkan field Asal Grapari
+3. **Form input:** render field per §6 → submit `POST /api/cases` → tampilkan `text` dari response sebagai konfirmasi "pesan terkirim ke grup".
+4. **Dashboard:** `GET /api/cases` (+filter) → tabel dengan badge status & indikator ack. Polling 30 dtk.
+5. **Detail:** klik baris → `GET /api/cases/{id}` → render thread `messages` + sidebar `updates` + chip `participants` dengan nama.
+6. **Aksi:** tombol koreksi status → `POST /api/cases/{id}/status` → refresh detail.
 
 ### Contoh render participants
 ```
@@ -386,12 +583,23 @@ Ditangani oleh:
 
 ### Contoh render timeline
 ```
-🤖 Bot: punten rekan @6281113021236 mohon bantuannya untuk case STC ...
+🤖 Bot: punten rekan @6281113021236 mohon bantuannya untuk case Non Order ...
   ↳ Mas Habib: dicek dulu mas                    [reply · 10:30]
     ↳ Budi Santoso: done mas, sudah diluruskan    [chain · 10:32] ✅ done
 ```
 
-## 7. Changelog
+## 8. Changelog
+
+### v1.3 (27 Agustus 2026)
+- **Area & Regional**: Tabel lookup baru dengan hierarchy Area → Regional. Endpoint `GET /api/areas` dan `GET /api/areas/{id}/regionals`.
+- **Sumber Ticket**: Tabel lookup baru (STC, Grapari, Web IT). Endpoint `GET /api/sumber-tickets`.
+- **Jenis Case**: Tabel lookup baru (Non Order, Non AO, Mobile). Menggantikan enum lama (stc/smooa/mobile/ufo/other). Endpoint `GET /api/jenis-cases`.
+- **Asal Grapari**: Field free text, hanya muncul jika Sumber Ticket = Grapari.
+- **Field lama opsional**: Semua field lama (ticket_remedy, no_indihome, dll) tetap ada tapi opsional.
+- **Mode textarea**: User bisa copy-paste langsung wording case tanpa input field satu per satu.
+- **Placeholder wording**: Tersedia per jenis case untuk mode textarea.
+- **Swagger tags**: Endpoint dikelompokkan (Cases, Lookup, Webhooks, System) dengan summary & description.
+- **Backward compatibility**: `case_type` lama di database tetap di-keep, data lama di-migrate ke `jenis_case_id`.
 
 ### v1.2 (20 Agustus 2026)
 - **Contact name resolution**: Backend resolve `@lid` → nama kontak via WAHA API. Field `author_name` di messages, `participants` berformat `{author, name}`.

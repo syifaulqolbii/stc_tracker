@@ -1,6 +1,7 @@
 """Integration tests for Moban FU Tracker API endpoints.
 
 These tests mock the database and WAHA to allow testing without running services.
+Updated for v1.2: new case types, new fields, new lookup endpoints.
 """
 import os
 import sys
@@ -67,17 +68,62 @@ def client(mock_waha):
         yield TestClient(main_module.app), mock_cursor
 
 
+def _create_case_mock_sequence(
+    jenis_case_name="Non Order",
+    sumber_ticket_name=None,
+    area_name=None,
+    regional_name=None,
+    case_id=42,
+    case_code="INC000023470570",
+):
+    """Build the fetchone mock sequence for create_case endpoint.
+    
+    The endpoint makes these DB calls in order:
+    1. _resolve_jenis_case(name) → SELECT id FROM jenis_cases WHERE name = %s
+       (skipped if name is None — returns early without DB call)
+    2. _resolve_sumber_ticket(name) → SELECT id FROM sumber_tickets WHERE name = %s
+       (skipped if name is None — returns early without DB call)
+    3. Resolve area_name (if area_id) → SELECT name FROM areas WHERE id = %s
+    4. Resolve regional_name (if regional_id) → SELECT name FROM regionals WHERE id = %s
+    5. INSERT RETURNING → {id, case_code}
+    6. INSERT wa_messages → None
+    """
+    seq = []
+    # 1. _resolve_jenis_case (only if name is not None)
+    if jenis_case_name:
+        seq.append({"id": 1})
+    # 2. _resolve_sumber_ticket (only if name is not None)
+    if sumber_ticket_name:
+        seq.append({"id": 2})
+    # 3. area name (only if area_name is provided, meaning area_id was set)
+    if area_name:
+        seq.append({"name": area_name})
+    # 4. regional name (only if regional_name is provided)
+    if regional_name:
+        seq.append({"name": regional_name})
+    # 5. INSERT RETURNING
+    seq.append({"id": case_id, "case_code": case_code})
+    # 6. INSERT wa_messages
+    seq.append(None)
+    return seq
+
+
 class TestCreateCase:
-    def test_create_stc_case(self, client):
+    def test_create_non_order_case(self, client):
         tc, mock_cursor = client
-        # Sequence: INSERT RETURNING -> INSERT INTO wa_messages
-        mock_cursor.fetchone.side_effect = [
-            {"id": 42, "case_code": "INC000023470570"},  # RETURNING id, case_code
-            None,  # INSERT wa_messages (no return)
-        ]
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non Order",
+            sumber_ticket_name="Grapari",
+            area_name="Area 1",
+            regional_name="Regional 2",
+        )
 
         response = tc.post("/api/cases", json={
-            "case_type": "stc",
+            "area_id": 1,
+            "regional_id": 2,
+            "sumber_ticket": "Grapari",
+            "jenis_case": "Non Order",
+            "asal_grapari": "GraPARI Bandung",
             "fields": {
                 "ticket_remedy": "INC000023470570",
                 "no_indihome": "142401135588",
@@ -91,117 +137,124 @@ class TestCreateCase:
         assert data["wa_message_id"] == "test_msg_123"
         assert "punten rekan" in data["text"]
         assert "@6281234567890" in data["text"]
-        assert "#STC" in data["text"]
+        assert "#Non Order" in data["text"]
+        assert "Area : Area 1" in data["text"]
+        assert "Regional : Regional 2" in data["text"]
+        assert "Sumber Ticket : Grapari" in data["text"]
+        assert "Asal Grapari : GraPARI Bandung" in data["text"]
 
-    def test_create_smooa_case(self, client):
+    def test_create_mobile_case(self, client):
         tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 43, "case_code": "INC999"},
-            None,
-        ]
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Mobile",
+            sumber_ticket_name=None,
+            case_code=None,
+        )
 
         response = tc.post("/api/cases", json={
-            "case_type": "smooa",
+            "jenis_case": "Mobile",
             "fields": {
-                "grapari": "GraPARI Bandung",
+                "msisdn": "6281234567890",
+                "detail_case": "Mobile test case",
+            },
+        })
+        assert response.status_code == 201
+        data = response.json()
+        assert "#Mobile" in data["text"]
+
+    def test_create_non_ao_case(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non AO",
+            sumber_ticket_name=None,
+            case_code="INC999",
+            case_id=45,
+        )
+
+        response = tc.post("/api/cases", json={
+            "jenis_case": "Non AO",
+            "fields": {
                 "ticket_remedy": "INC999",
-                "nama_pelanggan": "Budi Santoso",
+                "detail_case": "Non AO test",
             },
         })
         assert response.status_code == 201
         data = response.json()
         assert data["case_code"] == "INC999"
-        assert "#SMOOA" in data["text"]
-        assert "GraPARI : GraPARI Bandung" in data["text"]
-
-    def test_create_mobile_case(self, client):
-        tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 44, "case_code": None},
-            None,
-        ]
-
-        response = tc.post("/api/cases", json={
-            "case_type": "mobile",
-            "fields": {
-                "grapari": "GraPARI Jakarta",
-                "msisdn": "6281234567890",
-            },
-        })
-        assert response.status_code == 201
-        data = response.json()
-        assert "#Case Mobile" in data["text"]
-
-    def test_create_ufo_case(self, client):
-        tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 45, "case_code": None},
-            None,
-        ]
-
-        response = tc.post("/api/cases", json={
-            "case_type": "ufo",
-            "fields": {
-                "case_id": "UFO-123",
-                "detail_case": "UFO test case",
-            },
-        })
-        assert response.status_code == 201
-        data = response.json()
-        assert "#UFO" in data["text"]
-        assert "Case ID : UFO-123" in data["text"]
+        assert "#Non AO" in data["text"]
 
     def test_create_case_invalid_type_downgrades(self, client):
         tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 46, "case_code": None},
-            None,
-        ]
+        # "invalid_type" is not None, so _resolve_jenis_case makes a DB call
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="invalid_type",  # truthy → DB call, but not in lookup
+            case_code=None,
+            case_id=46,
+        )
 
         response = tc.post("/api/cases", json={
-            "case_type": "invalid_type",
+            "jenis_case": "invalid_type",
             "fields": {"detail_case": "Test"},
         })
         assert response.status_code == 201
         data = response.json()
-        assert "#Lainnya" in data["text"]
+        # Invalid type defaults to "non_order"
+        assert "#Non Order" in data["text"]
 
     def test_create_case_no_mentions(self, client):
         tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 47, "case_code": None},
-            None,
-        ]
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non Order",
+            case_code=None,
+            case_id=47,
+        )
 
         response = tc.post("/api/cases", json={
-            "case_type": "stc",
+            "jenis_case": "Non Order",
             "fields": {"ticket_remedy": "INC123"},
         })
         assert response.status_code == 201
         data = response.json()
         assert "punten mas" not in data["text"]
-        assert "#STC" in data["text"]
+        assert "#Non Order" in data["text"]
 
     def test_create_case_empty_fields(self, client):
         tc, mock_cursor = client
-        mock_cursor.fetchone.side_effect = [
-            {"id": 48, "case_code": None},
-            None,
-        ]
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non Order",
+            case_code=None,
+            case_id=48,
+        )
 
         response = tc.post("/api/cases", json={
-            "case_type": "stc",
+            "jenis_case": "Non Order",
             "fields": {},
         })
         assert response.status_code == 201
         data = response.json()
-        assert "#STC" in data["text"]
+        assert "#Non Order" in data["text"]
+
+    def test_create_case_legacy_type_maps(self, client):
+        """Legacy case_type 'stc' should map to 'non_order'."""
+        tc, mock_cursor = client
+        # When only case_type is provided (no jenis_case), _resolve_jenis_case gets None
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name=None,  # None because jenis_case not provided
+            case_code=None,
+            case_id=49,
+        )
+        response = tc.post("/api/cases", json={
+            "case_type": "stc",  # legacy field
+            "fields": {"ticket_remedy": "INC123"},
+        })
+        assert response.status_code == 201
+        data = response.json()
+        assert "#Non Order" in data["text"]
 
 
 class TestHealthCheck:
     def test_health_returns_ok(self, mock_waha):
         mock_conn, mock_cursor = _make_mock_db()
-        # No fetchone calls needed for health check (just SELECT 1)
 
         with patch.object(main_module, "db", return_value=mock_conn):
             mock_get_resp = MagicMock()
@@ -242,6 +295,52 @@ class TestSetStatus:
                 "note": "test",
             })
             assert response.status_code == 404
+
+
+class TestLookupEndpoints:
+    def test_list_areas(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            [{"id": 1, "name": "Area 1"}, {"id": 2, "name": "Area 2"}]
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/areas")
+            assert response.status_code == 200
+
+    def test_list_sumber_tickets(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            [{"id": 1, "name": "STC"}, {"id": 2, "name": "Grapari"}, {"id": 3, "name": "Web IT"}]
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/sumber-tickets")
+            assert response.status_code == 200
+
+    def test_list_jenis_cases(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            [{"id": 1, "name": "Non Order"}, {"id": 2, "name": "Non AO"}, {"id": 3, "name": "Mobile"}]
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/jenis-cases")
+            assert response.status_code == 200
+
+    def test_list_regionals_area_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/areas/999/regionals")
+            assert response.status_code == 404
+
+    def test_list_regionals_area_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1, "name": "Area 1"},  # area found
+            [{"id": 1, "name": "Regional 1"}, {"id": 2, "name": "Regional 2"}],  # regionals
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/areas/1/regionals")
+            assert response.status_code == 200
 
 
 class TestAuth:
