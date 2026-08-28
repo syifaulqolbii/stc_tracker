@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.4 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.5 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -72,52 +72,107 @@ X-API-Key: <key>
 Content-Type: application/json
 ```
 
-**Request:**
+**Request (contoh: STC + Non AO, field lengkap):**
 ```json
 {
   "area_id": 1,
-  "regional_id": 2,
-  "sumber_ticket": "Grapari",
-  "jenis_case": "Non Order",
-  "asal_grapari": "GraPARI Bandung",
+  "regional_id": 1,
+  "sumber_ticket": "STC",
+  "jenis_case": "Non AO",
+  "asal_grapari": null,
   "mentions": [
-    { "number": "6281113021236", "name": "Mas Habib Spv Tsel" }
+    { "number": "6281113021236", "name": "Mas Habib" }
   ],
   "fields": {
     "ticket_remedy": "INC000023470570",
-    "no_indihome": "142401135588",
     "order_id": "MOk4260811023440131b25f60",
+    "no_indihome": "0211234567",
     "last_milestone": "TSEL_ACTIVATION_FALLOUT",
-    "milestone_info": "UPCF-12302-The subscriber does not exist",
-    "detail_case": "Moban dibantu add subsnya di domain/realm telkom.net dan package INETFN50M...",
-    "evidence": "https://prnt.sc/OB6aazyzxFAU (telkom.net/INET50M)"
+    "request_case": "Mohon bantuannya follow up aktivasi",
+    "detail_case": "Pelanggan kendala aktivasi, last milestone TSEL_ACTIVATION_FALLOUT. Mohon dicek di sisi TSEL.",
+    "link_evidence": [
+      "https://prnt.sc/example1",
+      "https://drive.google.com/example2"
+    ]
+  }
+}
+```
+
+**Request (contoh: Grapari + Non Order):**
+```json
+{
+  "area_id": 3,
+  "regional_id": 7,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "Non Order",
+  "asal_grapari": "GraPARI Surabaya",
+  "mentions": [
+    { "number": "6281234567890", "name": "Budi" }
+  ],
+  "fields": {
+    "ticket_remedy": "INC000098765432",
+    "no_indihome": "0315678901",
+    "request_case": "Mohon cek status aktivasi",
+    "detail_case": "Pelanggan sudah bayar tapi layanan belum aktif.",
+    "link_evidence": [
+      "https://imgur.com/bukti_bayar",
+      "https://imgur.com/screenshot"
+    ]
+  }
+}
+```
+
+**Request (contoh: Web IT + Mobile):**
+```json
+{
+  "area_id": 4,
+  "regional_id": 10,
+  "sumber_ticket": "Web IT",
+  "jenis_case": "Mobile",
+  "asal_grapari": null,
+  "mentions": [
+    { "number": "6289876543210" }
+  ],
+  "fields": {
+    "ticket_remedy": "INC000055555555",
+    "msisdn": "6281299988877",
+    "request_case": "Cek coverage area",
+    "detail_case": "Pelanggan komplain sinyal lemah di area Jakarta Selatan.",
+    "link_evidence": [
+      "https://imgur.com/sinyal_screenshot"
+    ]
   }
 }
 ```
 
 Aturan:
-- Semua field **opsional**. Field baru (`area_id`, `regional_id`, `sumber_ticket`, `jenis_case`, `asal_grapari`) dan field lama (`ticket_remedy`, `no_indihome`, dll) semuanya tidak wajib diisi.
+- Field **required** per jenis case: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). Field lain **opsional**.
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
 - `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih.
-- `fields` — semua key opsional; yang kosong tidak muncul di teks WA.
-- `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan teks.
-- `case_code` diturunkan backend dari `fields.ticket_remedy` atau `fields.case_id`. Bisa `null`.
+- `fields.link_evidence` — array of URL. Bisa multiple link. Kosongkan array jika tidak ada evidence.
+- `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
+- `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
 
 **Format pesan WhatsApp (otomatis):**
 ```
-punten rekan @6281113021236 mohon bantuannya untuk case Non Order ada 1 case lagi
+punten rekan @6281113021236 mohon bantuannya untuk case Non AO ada 1 case lagi
 
-#Non Order
+#Non AO
 Area : Area 1
-Regional : Regional 2
-Sumber Ticket : Grapari
-Asal Grapari : GraPARI Bandung
-Jenis Case : Non Order
+Regional : Sumbagut
+Sumber Ticket : STC
+Jenis Case : Non AO
 Ticket Remedy : INC000023470570
-No Indihome : 142401135588
-...
+Order ID : MOk4260811023440131b25f60
+Nomer Indihome : 0211234567
+Last Milestone : TSEL_ACTIVATION_FALLOUT
+Request Case : Mohon bantuannya follow up aktivasi
+Detail Case : Pelanggan kendala aktivasi...
+Link Evidence :
+https://prnt.sc/example1
+https://drive.google.com/example2
 ```
 
 > **Catatan mention:** Backend menggunakan `@<nomor telepon>` di text, bukan `@<nama>`. WhatsApp otomatis render nama kontak dari phone book. Mention hanya work untuk kontak yang sudah save nomor bot.
@@ -128,7 +183,7 @@ No Indihome : 142401135588
   "id": 42,
   "case_code": "INC000023470570",
   "wa_message_id": "true_120363xxx@g.us_3EB0A1B2C3",
-  "text": "punten rekan @6281113021236 mohon bantuannya untuk case Non Order ada 1 case lagi\n\n#Non Order\nArea : Area 1\n..."
+  "text": "punten rekan @6281113021236 mohon bantuannya untuk case Non AO ada 1 case lagi\n\n#Non AO\nArea : Area 1\nRegional : Sumbagut\nSumber Ticket : STC\nJenis Case : Non AO\nTicket Remedy : INC000023470570\nOrder ID : MOk4260811023440131b25f60\nNomer Indihome : 0211234567\n..."
 }
 ```
 `text` adalah pesan final persis yang terkirim ke grup — tampilkan di toast/modal sukses sebagai bukti.
@@ -580,7 +635,394 @@ Ditangani oleh:
     ↳ Budi Santoso: done mas, sudah diluruskan    [chain · 10:32] ✅ done
 ```
 
-## 8. Changelog
+## 8. Contoh Lengkap: Semua Kombinasi Sumber Ticket × Jenis Case
+
+Berikut 9 kombinasi lengkap dengan request body, field required, dan format pesan WhatsApp yang dihasilkan.
+
+---
+
+### 8.1 STC + Non Order
+
+**Request:**
+```json
+{
+  "area_id": 1,
+  "regional_id": 1,
+  "sumber_ticket": "STC",
+  "jenis_case": "Non Order",
+  "fields": {
+    "ticket_remedy": "INC000011111111",
+    "no_indihome": "0211111111",
+    "request_case": "Mohon bantuannya cek status pasang baru",
+    "detail_case": "Pelanggan request pasang baru INDIHOME 50Mbps.",
+    "link_evidence": ["https://imgur.com/formorder"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non Order ada 1 case lagi
+
+#Non Order
+Area : Area 1
+Regional : Sumbagut
+Sumber Ticket : STC
+Jenis Case : Non Order
+Ticket Remedy : INC000011111111
+Nomer Indihome : 0211111111
+Request Case : Mohon bantuannya cek status pasang baru
+Detail Case : Pelanggan request pasang baru INDIHOME 50Mbps.
+Link Evidence :
+https://imgur.com/formorder
+```
+
+---
+
+### 8.2 STC + Non AO
+
+**Request:**
+```json
+{
+  "area_id": 1,
+  "regional_id": 1,
+  "sumber_ticket": "STC",
+  "jenis_case": "Non AO",
+  "fields": {
+    "ticket_remedy": "INC000022222222",
+    "order_id": "MOk4260811023440131b25f60",
+    "no_indihome": "0212222222",
+    "last_milestone": "TSEL_ACTIVATION_FALLOUT",
+    "request_case": "Follow up aktivasi macet",
+    "detail_case": "Order ID sudah masuk tapi aktivasi stuck di TSEL.",
+    "link_evidence": ["https://prnt.sc/screenshot1", "https://imgur.com/screenshot2"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non AO ada 1 case lagi
+
+#Non AO
+Area : Area 1
+Regional : Sumbagut
+Sumber Ticket : STC
+Jenis Case : Non AO
+Ticket Remedy : INC000022222222
+Order ID : MOk4260811023440131b25f60
+Nomer Indihome : 0212222222
+Last Milestone : TSEL_ACTIVATION_FALLOUT
+Request Case : Follow up aktivasi macet
+Detail Case : Order ID sudah masuk tapi aktivasi stuck di TSEL.
+Link Evidence :
+https://prnt.sc/screenshot1
+https://imgur.com/screenshot2
+```
+
+---
+
+### 8.3 STC + Mobile
+
+**Request:**
+```json
+{
+  "area_id": 2,
+  "regional_id": 4,
+  "sumber_ticket": "STC",
+  "jenis_case": "Mobile",
+  "fields": {
+    "ticket_remedy": "INC000033333333",
+    "msisdn": "6281233344455",
+    "request_case": "Cek sinyal area Jakarta",
+    "detail_case": "Pelanggan komplain sinyal hilang sejak kemarin.",
+    "link_evidence": ["https://imgur.com/sinyal"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Mobile ada 1 case lagi
+
+#Mobile
+Area : Area 2
+Regional : Jabo
+Sumber Ticket : STC
+Jenis Case : Mobile
+Ticket Remedy : INC000033333333
+MSISDN : 6281233344455
+Request Case : Cek sinyal area Jakarta
+Detail Case : Pelanggan komplain sinyal hilang sejak kemarin.
+Link Evidence :
+https://imgur.com/sinyal
+```
+
+---
+
+### 8.4 Grapari + Non Order
+
+**Request:**
+```json
+{
+  "area_id": 3,
+  "regional_id": 7,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "Non Order",
+  "asal_grapari": "GraPARI Surabaya",
+  "fields": {
+    "ticket_remedy": "INC000044444444",
+    "no_indihome": "0314444444",
+    "request_case": "Bantu cek billing overlap",
+    "detail_case": "Pelanggan tagihan dobel bulan ini.",
+    "link_evidence": ["https://imgur.com/billing_screenshot"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non Order ada 1 case lagi
+
+#Non Order
+Area : Area 3
+Regional : Jateng DIY
+Sumber Ticket : Grapari
+Asal Grapari : GraPARI Surabaya
+Jenis Case : Non Order
+Ticket Remedy : INC000044444444
+Nomer Indihome : 0314444444
+Request Case : Bantu cek billing overlap
+Detail Case : Pelanggan tagihan dobel bulan ini.
+Link Evidence :
+https://imgur.com/billing_screenshot
+```
+
+---
+
+### 8.5 Grapari + Non AO
+
+**Request:**
+```json
+{
+  "area_id": 2,
+  "regional_id": 5,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "Non AO",
+  "asal_grapari": "GraPARI Bandung",
+  "fields": {
+    "ticket_remedy": "INC000055555555",
+    "order_id": "ORD-2026-0827-001",
+    "no_indihome": "0225555555",
+    "last_milestone": "INSTALL_PENDING",
+    "request_case": "Urgent: pelanggan sudah tunggu 3 hari",
+    "detail_case": "Order aktivasi sudah 3 hari belum diproses. Pelanggan sudah follow up berkali-kali.",
+    "link_evidence": ["https://drive.google.com/lampiran1", "https://imgur.com/chat_screenshot"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non AO ada 1 case lagi
+
+#Non AO
+Area : Area 2
+Regional : Jabar
+Sumber Ticket : Grapari
+Asal Grapari : GraPARI Bandung
+Jenis Case : Non AO
+Ticket Remedy : INC000055555555
+Order ID : ORD-2026-0827-001
+Nomer Indihome : 0225555555
+Last Milestone : INSTALL_PENDING
+Request Case : Urgent: pelanggan sudah tunggu 3 hari
+Detail Case : Order aktivasi sudah 3 hari belum diproses...
+Link Evidence :
+https://drive.google.com/lampiran1
+https://imgur.com/chat_screenshot
+```
+
+---
+
+### 8.6 Grapari + Mobile
+
+**Request:**
+```json
+{
+  "area_id": 4,
+  "regional_id": 10,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "Mobile",
+  "asal_grapari": "GraPARI Makassar",
+  "fields": {
+    "ticket_remedy": "INC000066666666",
+    "msisdn": "6281666677788",
+    "request_case": "Cek kuota habis atau gangguan jaringan?",
+    "detail_case": "Pelanggan bilang kuota masih ada tapi tidak bisa internetan.",
+    "link_evidence": ["https://imgur.com/speedtest"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Mobile ada 1 case lagi
+
+#Mobile
+Area : Area 4
+Regional : Sulawesi
+Sumber Ticket : Grapari
+Asal Grapari : GraPARI Makassar
+Jenis Case : Mobile
+Ticket Remedy : INC000066666666
+MSISDN : 6281666677788
+Request Case : Cek kuota habis atau gangguan jaringan?
+Detail Case : Pelanggan bilang kuota masih ada tapi tidak bisa internetan.
+Link Evidence :
+https://imgur.com/speedtest
+```
+
+---
+
+### 8.7 Web IT + Non Order
+
+**Request:**
+```json
+{
+  "area_id": 1,
+  "regional_id": 2,
+  "sumber_ticket": "Web IT",
+  "jenis_case": "Non Order",
+  "fields": {
+    "ticket_remedy": "INC000077777777",
+    "no_indihome": "0617777777",
+    "request_case": "Reset password akun pelanggan",
+    "detail_case": "Pelanggan tidak bisa login ke myIndiHOME. Sudah coba reset sendiri tapi gagal.",
+    "link_evidence": ["https://imgur.com/error_page"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non Order ada 1 case lagi
+
+#Non Order
+Area : Area 1
+Regional : Sumbagsel
+Sumber Ticket : Web IT
+Jenis Case : Non Order
+Ticket Remedy : INC000077777777
+Nomer Indihome : 0617777777
+Request Case : Reset password akun pelanggan
+Detail Case : Pelanggan tidak bisa login ke myIndiHOME...
+Link Evidence :
+https://imgur.com/error_page
+```
+
+---
+
+### 8.8 Web IT + Non AO
+
+**Request:**
+```json
+{
+  "area_id": 3,
+  "regional_id": 8,
+  "sumber_ticket": "Web IT",
+  "jenis_case": "Non AO",
+  "fields": {
+    "ticket_remedy": "INC000088888888",
+    "order_id": "WO-2026-0827-003",
+    "no_indihome": "0358888888",
+    "request_case": "Escalasi: order stuck 5 hari kerja",
+    "detail_case": "Work order sudah 5 hari kerja belum ada progress. Mohon segera ditindaklanjuti.",
+    "link_evidence": ["https://imgur.com/order_tracking", "https://drive.google.com/chat_log"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Non AO ada 1 case lagi
+
+#Non AO
+Area : Area 3
+Regional : Jatim
+Sumber Ticket : Web IT
+Jenis Case : Non AO
+Ticket Remedy : INC000088888888
+Order ID : WO-2026-0827-003
+Nomer Indihome : 0358888888
+Request Case : Escalasi: order stuck 5 hari kerja
+Detail Case : Work order sudah 5 hari kerja belum ada progress...
+Link Evidence :
+https://imgur.com/order_tracking
+https://drive.google.com/chat_log
+```
+
+---
+
+### 8.9 Web IT + Mobile
+
+**Request:**
+```json
+{
+  "area_id": 4,
+  "regional_id": 11,
+  "sumber_ticket": "Web IT",
+  "jenis_case": "Mobile",
+  "fields": {
+    "ticket_remedy": "INC000099999999",
+    "msisdn": "6281999900011",
+    "request_case": "Ganti paket dari Basic ke Premium",
+    "detail_case": "Pelanggan minta upgrade paket tapi tidak bisa dari aplikasi.",
+    "link_evidence": ["https://imgur.com/app_error"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case Mobile ada 1 case lagi
+
+#Mobile
+Area : Area 4
+Regional : Kalimantan
+Sumber Ticket : Web IT
+Jenis Case : Mobile
+Ticket Remedy : INC000099999999
+MSISDN : 6281999900011
+Request Case : Ganti paket dari Basic ke Premium
+Detail Case : Pelanggan minta upgrade paket tapi tidak bisa dari aplikasi.
+Link Evidence :
+https://imgur.com/app_error
+```
+
+---
+
+### Ringkasan Field per Kombinasi
+
+| Sumber | Jenis Case | Required Fields | Optional Fields | Asal Grapari |
+|---|---|---|---|---|
+| STC | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
+| STC | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
+| STC | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
+| Grapari | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ✅ Wajib input |
+| Web IT | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
+| Web IT | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
+| Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
+
+## 9. Changelog
+
+### v1.5 (27 Agustus 2026)
+- **Contoh lengkap**: Semua 9 kombinasi Sumber Ticket × Jenis Case dengan request body, response, dan format pesan WA.
+- **Required fields**: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile).
+- **Pushname优先**: Contact name resolution sekarang prioritize `pushname` (nama yang user set di WA) daripada `name` (phone book).
+- **LID API**: `resolve_contact_name` sekarang handle 2-step: `@lid` → phone via WAHA LID API → name via Contacts API.
 
 ### v1.4 (27 Agustus 2026)
 - **Field per jenis case disederhanakan**: Hanya field yang dibutuhkan per jenis case.
