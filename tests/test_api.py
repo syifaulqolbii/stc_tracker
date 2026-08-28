@@ -541,3 +541,59 @@ class TestSolverContacts:
             tc = TestClient(main_module.app)
             response = tc.delete("/api/solver-contacts/999")
             assert response.status_code == 404
+
+
+class TestMediaHandling:
+    """Test handling of image + caption and image-only replies from WAHA."""
+
+    def test_webhook_image_caption_dispatches_handle_message(self, mock_waha):
+        """Webhook with hasMedia + body should dispatch to handle_message."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "handle_message", new_callable=AsyncMock, return_value=True) as mock_handle:
+            tc = TestClient(main_module.app)
+            response = tc.post("/webhooks/waha", json={
+                "event": "message",
+                "payload": {
+                    "id": {"_serialized": "true_123@g.us_ABC"},
+                    "body": "done INC123",
+                    "from": "120363xxx@g.us",
+                    "hasMedia": True,
+                    "media": {
+                        "url": "http://waha:3000/api/files/abc.jpg",
+                        "mimetype": "image/jpeg",
+                    },
+                },
+            })
+            assert response.status_code == 200
+            mock_handle.assert_called_once()
+            payload = mock_handle.call_args[0][0]
+            assert payload["hasMedia"] is True
+            assert payload["media"]["url"] == "http://waha:3000/api/files/abc.jpg"
+
+    def test_store_message_saves_media_info(self):
+        """store_message should save media_url and media_type to DB."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.store_message(
+                "test_mid", "quoted_123", "author_456", "done INC123",
+                media_url="http://waha:3000/api/files/abc.jpg",
+                media_type="image/jpeg",
+            )
+            args = mock_cursor.execute.call_args[0]
+            # args[0] is SQL, args[1] is params tuple
+            params = args[1]
+            assert params[5] == "http://waha:3000/api/files/abc.jpg"  # media_url
+            assert params[6] == "image/jpeg"  # media_type
+
+    def test_store_message_without_media(self):
+        """store_message without media should set media_url/media_type to None."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.store_message(
+                "test_mid", None, "author", "hello world"
+            )
+            args = mock_cursor.execute.call_args[0]
+            params = args[1]
+            assert params[5] is None  # media_url
+            assert params[6] is None  # media_type

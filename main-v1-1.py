@@ -342,14 +342,14 @@ def parse_rule(text: str) -> dict:
 
 # ---------------------------------------------------------------- DB
 
-def store_message(wa_mid, quoted_id, author, body, from_me=False):
+def store_message(wa_mid, quoted_id, author, body, from_me=False, media_url=None, media_type=None):
     if not wa_mid:
         return
     with db() as conn, conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO wa_messages (wa_message_id, quoted_id, author, body, from_me)
-               VALUES (%s,%s,%s,%s,%s) ON CONFLICT (wa_message_id) DO NOTHING""",
-            (wa_mid, quoted_id, author, body, from_me),
+            """INSERT INTO wa_messages (wa_message_id, quoted_id, author, body, from_me, media_url, media_type)
+               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (wa_message_id) DO NOTHING""",
+            (wa_mid, quoted_id, author, body, from_me, media_url, media_type),
         )
         conn.commit()
 
@@ -573,14 +573,20 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
         log.warning("SKIP: from=%s != WA_GROUP_ID=%s", p.get("from"), WA_GROUP_ID)
         return False
     body = (p.get("body") or "").strip()
-    if not body:
+    has_media = p.get("hasMedia", False)
+    media = p.get("media") or {}
+    media_url = media.get("url")
+    media_type = media.get("mimetype")
+
+    # Skip if no body AND no media
+    if not body and not has_media:
         return False
 
     wa_mid = norm_id(p.get("id"))
     quoted = extract_quoted_id(p)
     author = p.get("participant") or p.get("author") or p.get("from")
 
-    store_message(wa_mid, quoted, author, body)
+    store_message(wa_mid, quoted, author, body, media_url=media_url, media_type=media_type)
 
     # Resolve contact name in background (non-blocking)
     author_name = await resolve_contact_name(author)
@@ -838,7 +844,8 @@ def case_detail(case_id: int, request: Request,
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
         cur.execute(
-            """SELECT wa_message_id, quoted_id, author, author_name, body, from_me, created_at
+            """SELECT wa_message_id, quoted_id, author, author_name, body, from_me,
+                      media_url, media_type, created_at
                FROM wa_messages WHERE case_id = %s ORDER BY created_at""",
             (case_id,),
         )
@@ -1126,10 +1133,13 @@ async def crawl_group(
     store_errors = 0
     for m in msgs:
         try:
+            media = m.get("media") or {}
             store_message(norm_id(m.get("id")), extract_quoted_id(m),
                           m.get("participant") or m.get("author") or m.get("from"),
                           (m.get("body") or "").strip(),
-                          from_me=m.get("fromMe", False))
+                          from_me=m.get("fromMe", False),
+                          media_url=media.get("url"),
+                          media_type=media.get("mimetype"))
             stored += 1
         except Exception as e:
             store_errors += 1
