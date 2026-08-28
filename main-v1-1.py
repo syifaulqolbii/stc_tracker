@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from templates import (
     CASE_TYPES, LEGACY_CASE_TYPE_MAP,
-    render_case_text, render_header,
+    render_case_text, render_header, render_reminder_text,
 )
 
 # Structured logging
@@ -76,6 +76,7 @@ app = FastAPI(
         {"name": "Cases", "description": "CRUD dan manajemen case"},
         {"name": "Lookup", "description": "Data referensi: Area, Regional, Sumber Ticket, Jenis Case"},
         {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
+        {"name": "Reminders", "description": "Reminder proaktif untuk case yang belum di-handle"},
         {"name": "Webhooks", "description": "Webhook receiver dari WAHA (WhatsApp HTTP API)"},
         {"name": "System", "description": "Health check dan operasi sistem"},
     ],
@@ -662,6 +663,13 @@ class StatusIn(BaseModel):
     note: str | None = Field(None, description="Catatan opsional untuk update status")
 
 
+class ReminderIn(BaseModel):
+    message: str | None = Field(
+        None,
+        description="Pesan reminder custom. Kosongkan untuk default: 'mohon di-follow up ya, case ini belum ada respon 🙏'",
+    )
+
+
 class SolverContactIn(BaseModel):
     name: str = Field(..., description="Nama kontak solver")
     phone_number: str = Field(..., description="Nomor WA format internasional tanpa + (contoh: 6281234567890)")
@@ -744,11 +752,15 @@ async def create_case(inp: CaseIn, request: Request,
 
     wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None)
 
+    # Build mentions JSON for storage
+    mentions_json = json.dumps([{"number": m.number, "name": m.name} for m in inp.mentions]) if inp.mentions else "[]"
+
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """INSERT INTO cases (case_code, case_type, title, fields, message_text, wa_message_id,
-                                  area_id, regional_id, sumber_ticket_id, jenis_case_id, asal_grapari)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                  area_id, regional_id, sumber_ticket_id, jenis_case_id, asal_grapari,
+                                  mentions)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (case_code) DO UPDATE
                  SET wa_message_id = EXCLUDED.wa_message_id,
                      message_text  = EXCLUDED.message_text,
@@ -757,13 +769,14 @@ async def create_case(inp: CaseIn, request: Request,
                      sumber_ticket_id = EXCLUDED.sumber_ticket_id,
                      jenis_case_id = EXCLUDED.jenis_case_id,
                      asal_grapari  = EXCLUDED.asal_grapari,
+                     mentions      = EXCLUDED.mentions,
                      status        = 'open',
                      updated_at    = now()
                RETURNING id, case_code""",
             (case_code, jenis_key, f.get("detail_case", "")[:120],
              json.dumps(f), text, wa_mid,
              inp.area_id, inp.regional_id, sumber_ticket_id,
-             jenis_case_id, inp.asal_grapari),
+             jenis_case_id, inp.asal_grapari, mentions_json),
         )
         row = cur.fetchone()
         cur.execute(
@@ -943,6 +956,204 @@ def list_jenis_cases(
 ):
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, name FROM jenis_cases ORDER BY name")
+        return cur.fetchall()
+
+
+# ---------------------------------------------------------------- Reminders API
+
+@app.post("/api/cases/{case_id}/reminder", status_code=200, tags=["Reminders"],
+          summary="Kirim reminder ke solver",
+          description="Reply ke pesan case asli di grup WA untuk mengingatkan solver bahwa case belum di-handle.")
+async def send_reminder(
+    case_id: int,
+    inp: ReminderIn,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
+        case = cur.fetchone()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        if case["status"] == "done":
+            raise HTTPException(status_code=400, detail="Case sudah done, tidak perlu reminder")
+
+    # Extract solver mentions from stored JSONB
+    mentions_data = case.get("mentions") or []
+    if isinstance(mentions_data, str):
+        mentions_data = json.loads(mentions_data)
+    mention_numbers = [m.get("number") for m in mentions_data if m.get("number")]
+
+    # Build reminder message
+    message = render_reminder_text(inp.message)
+
+    # Send reply to original case message
+    wa_mid = await waha_send(
+        message,
+        mentions=mention_numbers or None,
+        reply_to=case["wa_message_id"],
+    )
+
+    # Update DB
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE cases
+               SET reminder_count = COALESCE(reminder_count, 0) + 1,
+                   last_reminder_at = now(),
+                   updated_at = now()
+               WHERE id = %s""",
+            (case_id,),
+        )
+        cur.execute(
+            """INSERT INTO reminder_log (case_id, wa_message_id, message, triggered_by)
+               VALUES (%s, %s, %s, 'manual')""",
+            (case_id, wa_mid, message),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "reminder_count": (case.get("reminder_count") or 0) + 1,
+        "wa_message_id": wa_mid,
+        "message": message,
+    }
+
+
+@app.post("/api/reminders/run", tags=["Reminders"],
+          summary="Jalankan auto-reminder untuk case yang idle",
+          description=(
+              "Dipanggil oleh crontab. Cari cases open/in_progress yang sudah X jam tanpa update, "
+              "kirim reminder ke solver. RETURN jumlah case yang di-reminder."
+          ))
+async def run_auto_reminders(
+    request: Request,
+    hours: int = Query(2, description="Jam idle sebelum case di-reminder"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    reminded_cases = []
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT * FROM cases
+               WHERE status IN ('open', 'in_progress')
+                 AND updated_at < now() - make_interval(hours => %s)
+                 AND (last_reminder_at IS NULL
+                      OR last_reminder_at < now() - make_interval(hours => %s))
+               ORDER BY updated_at ASC""",
+            (hours, hours),
+        )
+        cases = cur.fetchall()
+
+    for case in cases:
+        mentions_data = case.get("mentions") or []
+        if isinstance(mentions_data, str):
+            mentions_data = json.loads(mentions_data)
+        mention_numbers = [m.get("number") for m in mentions_data if m.get("number")]
+
+        message = render_reminder_text(None)
+        try:
+            wa_mid = await waha_send(
+                message,
+                mentions=mention_numbers or None,
+                reply_to=case["wa_message_id"],
+            )
+            with db() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE cases
+                       SET reminder_count = COALESCE(reminder_count, 0) + 1,
+                           last_reminder_at = now(),
+                           updated_at = now()
+                       WHERE id = %s""",
+                    (case["id"],),
+                )
+                cur.execute(
+                    """INSERT INTO reminder_log (case_id, wa_message_id, message, triggered_by)
+                       VALUES (%s, %s, %s, 'cron')""",
+                    (case["id"], wa_mid, message),
+                )
+                conn.commit()
+            reminded_cases.append({
+                "id": case["id"],
+                "case_code": case.get("case_code"),
+                "reminder_count": (case.get("reminder_count") or 0) + 1,
+            })
+        except Exception as e:
+            log.warning("Auto-reminder failed for case %d: %s", case["id"], e)
+
+    return {
+        "checked": len(cases),
+        "reminded": len(reminded_cases),
+        "cases": reminded_cases,
+    }
+
+
+@app.get("/api/reminders/pending", tags=["Reminders"],
+         summary="Daftar case yang perlu reminder",
+         description="Return cases open/in_progress yang sudah X jam tanpa update.")
+def list_pending_reminders(
+    request: Request,
+    hours: int = Query(2, description="Jam idle minimum"),
+    limit: int = Query(50, description="Max jumlah case yang dikembalikan"),
+    area_id: int | None = Query(None, description="Filter Area ID"),
+    regional_id: int | None = Query(None, description="Filter Regional ID"),
+    sumber_ticket: str | None = Query(None, description="Filter sumber ticket"),
+    jenis_case: str | None = Query(None, description="Filter jenis case"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql = """SELECT c.id, c.case_code, c.case_type, c.status,
+                    c.created_at, c.updated_at, c.reminder_count, c.last_reminder_at,
+                    c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id,
+                    a.name AS area_name, r.name AS regional_name,
+                    st.name AS sumber_ticket_name, jc.name AS jenis_case_name,
+                    EXTRACT(EPOCH FROM (now() - c.updated_at)) / 3600 AS idle_hours
+             FROM cases c
+             LEFT JOIN areas a ON c.area_id = a.id
+             LEFT JOIN regionals r ON c.regional_id = r.id
+             LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
+             LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
+             WHERE c.status IN ('open', 'in_progress')
+               AND c.updated_at < now() - make_interval(hours => %s)
+               AND (c.last_reminder_at IS NULL
+                    OR c.last_reminder_at < now() - make_interval(hours => %s))"""
+    args: list = [hours, hours]
+    if area_id:
+        sql += " AND c.area_id = %s"
+        args.append(area_id)
+    if regional_id:
+        sql += " AND c.regional_id = %s"
+        args.append(regional_id)
+    if sumber_ticket:
+        sql += " AND st.name = %s"
+        args.append(sumber_ticket)
+    if jenis_case:
+        sql += " AND jc.name = %s"
+        args.append(jenis_case)
+    sql += " ORDER BY c.updated_at ASC LIMIT %s"
+    args.append(limit)
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        return cur.fetchall()
+
+
+@app.get("/api/cases/{case_id}/reminder", tags=["Reminders"],
+         summary="Riwayat reminder untuk case",
+         description="Return semua reminder yang sudah dikirim untuk case ini.")
+def list_case_reminders(
+    case_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM cases WHERE id = %s", (case_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Case not found")
+        cur.execute(
+            "SELECT * FROM reminder_log WHERE case_id = %s ORDER BY created_at",
+            (case_id,),
+        )
         return cur.fetchall()
 
 

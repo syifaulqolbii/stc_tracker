@@ -170,3 +170,10 @@ def render_case_text(case_type: str, fields: dict,
                     lines.append(f"{fld_label} : {s}")
 
     return "\n".join(lines)
+
+
+def render_reminder_text(custom_message: str | None = None) -> str:
+    """Render pesan reminder (nudge untuk case yang belum di-handle)."""
+    if custom_message:
+        return custom_message
+    return "mohon di-follow up ya, case ini belum ada respon 🙏"

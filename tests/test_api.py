@@ -597,3 +597,136 @@ class TestMediaHandling:
             params = args[1]
             assert params[5] is None  # media_url
             assert params[6] is None  # media_type
+
+
+class TestReminder:
+    def test_reminder_manual_success(self, mock_waha):
+        """Manual reminder should send reply and update DB."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+             "mentions": [{"number": "6281234567890", "name": "Budi"}],
+             "reminder_count": 0},
+            None,  # UPDATE reminder_count
+            None,  # INSERT reminder_log
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/cases/6/reminder", json={})
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is True
+            assert data["reminder_count"] == 1
+            assert data["wa_message_id"] == "test_msg_123"
+            assert "follow up" in data["message"]
+
+    def test_reminder_case_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/cases/99999/reminder", json={})
+            assert response.status_code == 404
+
+    def test_reminder_case_done(self, mock_waha):
+        """Cannot send reminder to a done case."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "done", "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/cases/6/reminder", json={})
+            assert response.status_code == 400
+            assert "done" in response.json()["detail"]
+
+    def test_reminder_custom_message(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+             "mentions": [{"number": "6281234567890", "name": "Budi"}],
+             "reminder_count": 0},
+            None,  # UPDATE
+            None,  # INSERT log
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/cases/6/reminder", json={
+                "message": "tolong segera di-follow up ya!",
+            })
+            assert response.status_code == 200
+            data = response.json()
+            assert data["message"] == "tolong segera di-follow up ya!"
+
+    def test_reminder_history(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6},  # case exists
+            [{"id": 1, "triggered_by": "manual", "message": "follow up"},
+             {"id": 2, "triggered_by": "cron", "message": "follow up"}],
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/cases/6/reminder")
+            assert response.status_code == 200
+
+    def test_reminder_history_case_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/cases/99999/reminder")
+            assert response.status_code == 404
+
+    def test_run_auto_reminders(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,  # UPDATE
+            None,  # INSERT log
+        ])
+        mock_cursor.fetchall.return_value = [
+            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+             "mentions": [{"number": "6281234567890", "name": "Budi"}],
+             "reminder_count": 0},
+        ]
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/reminders/run?hours=2")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["checked"] == 1
+            assert data["reminded"] == 1
+
+    def test_run_auto_reminders_no_cases(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/reminders/run?hours=2")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["checked"] == 0
+            assert data["reminded"] == 0
+
+    def test_list_pending_reminders(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            [{"id": 6, "case_code": "INC123", "idle_hours": 5.2,
+              "reminder_count": 1}],
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/reminders/pending?hours=2")
+            assert response.status_code == 200
+
+    def test_reminder_no_mentions(self, mock_waha):
+        """Reminder should work even when case has no stored mentions."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+            None,  # UPDATE
+            None,  # INSERT log
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/cases/6/reminder", json={})
+            assert response.status_code == 200
+            data = response.json()
+            assert data["ok"] is True

@@ -343,3 +343,22 @@ def test_required_fields_subset_of_case_fields():
         field_keys = {k for k, _ in CASE_FIELDS[case_type]}
         for rf in req:
             assert rf in field_keys, f"Required field '{rf}' not in CASE_FIELDS for {case_type}"
+
+
+# ---------------------------------------------------------------- Reminder text tests
+
+from templates import render_reminder_text
+
+
+def test_render_reminder_text_default():
+    """Default reminder message should contain follow-up text."""
+    result = render_reminder_text(None)
+    assert "follow up" in result
+    assert "🙏" in result
+
+
+def test_render_reminder_text_custom():
+    """Custom message should be returned as-is."""
+    custom = "tolong segera di-follow up ya!"
+    result = render_reminder_text(custom)
+    assert result == custom
