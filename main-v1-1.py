@@ -1401,8 +1401,20 @@ async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
     if not url or ("waha" not in url and "localhost" not in url and "127.0.0.1" not in url):
         raise HTTPException(status_code=400, detail="Invalid media URL")
     try:
+        # Rewrite localhost/127.0.0.1 -> waha (inside Docker, localhost = this container)
+        fetch_url = url
+        if "localhost" in fetch_url or "127.0.0.1" in fetch_url:
+            # Replace host with WAHA_URL host (e.g. http://waha:3000)
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(fetch_url)
+            waha_parsed = urlparse(WAHA_URL)
+            fetch_url = urlunparse(parsed._replace(
+                scheme=waha_parsed.scheme,
+                netloc=waha_parsed.netloc,
+            ))
+            log.info("Media proxy: rewritten %s -> %s", url[:80], fetch_url[:80])
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers=WAHA_HEADERS, follow_redirects=True)
+            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=True)
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail="Media not found")
             media_type = resp.headers.get("content-type", "application/octet-stream")
