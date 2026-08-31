@@ -143,7 +143,7 @@ app = FastAPI(
         {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
         {"name": "Reminders", "description": "Reminder proaktif untuk case yang belum di-handle"},
         {"name": "Webhooks", "description": "Webhook receiver dari WAHA (WhatsApp HTTP API)"},
-        {"name": "Media", "description": "Proxy media (image/video) dari WAHA untuk akses dari luar Docker"},
+        {"name": "Media", "description": "Serve media (image/video) yang sudah di-download dari WAHA. File disimpan di Docker volume."},
         {"name": "System", "description": "Health check dan operasi sistem"},
     ],
 )

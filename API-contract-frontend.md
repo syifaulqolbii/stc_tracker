@@ -344,7 +344,7 @@ Cara render timeline:
 - `updates[].source` menjelaskan bagaimana update tertangkap:
   - `reply` = langsung reply ke pesan root bot
   - `chain` = reply ke pesan orang lain (eskalasi) — layak diberi ikon khusus
-- `media_url` berisi proxy URL yang bisa diakses browser (via `GET /api/media/proxy`). Kalau `null`, tidak ada media. Render sebagai gambar/video inline di timeline.
+- `media_url` berisi URL media yang bisa diakses browser. Format: `https://api.stc.it-jaya.id/api/media/file/{uuid}.jpg`. Kalau `null`, tidak ada media. Render sebagai gambar/video inline di timeline. Untuk media lama (sebelum v1.6.1), masih pakai format proxy URL.
 - `media_type` = MIME type media (contoh: `image/jpeg`, `video/mp4`). Gunakan untuk menentukan render: `image/*` → `<img>`, `video/*` → `<video>`, lainnya → link download.
 - `author` berformat `xxx@lid` (WhatsApp LID). `author_name` adalah nama kontak yang di-resolve otomatis dari phone book via WAHA API.
 
@@ -611,31 +611,54 @@ json
 
 ---
 
-## 7. Media Proxy
+## 7. Media Serving
 
-Endpoint untuk proxy media (image/video/doc) dari WAHA supaya bisa diakses dari browser/frontend. WAHA mengembalikan URL internal Docker (`http://waha:3000/api/files/...`) yang tidak bisa diakses dari luar.
+Backend mendownload media (image/video/doc) dari WAHA saat webhook masuk, menyimpan ke Docker volume, dan serve langsung dari backend. Frontend bisa langsung pakai `media_url` di `<img>` atau `<video>`.
 
-### 7.1 `GET /api/media/proxy` — Proxy media dari WAHA
+### 7.1 `GET /api/media/file/{filename}` — Serve media file lokal
 
 **Tidak perlu auth** (agar bisa diakses langsung oleh `<img>` / `<video>` di browser).
+
+**Path params:**
+| Param | Keterangan |
+|---|---|
+| `filename` | Nama file media (format: `{uuid}.{ext}`, contoh: `a1b2c3d4e5f6.jpg`) |
+
+**Contoh:**
+```
+GET /api/media/file/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg
+```
+
+**Response `200`:** File binary dengan `Content-Type` sesuai extension (image/jpeg, image/png, video/mp4, dll).
+
+**Response `400`:** Filename tidak valid (harus alphanumeric + dot + extension).
+
+**Response `404:** File tidak ditemukan.
+
+> **Catatan:** `media_url` di timeline response (`GET /api/cases/{id}`) sudah berisi URL lengkap yang bisa langsung dipakai di `<img src="...">` atau `<video src="...">`. Frontend tidak perlu handle apapun.
+
+### 7.2 `GET /api/media/proxy` — Legacy proxy (fallback)
+
+**Tidak perlu auth.**
 
 **Query params:**
 | Param | Required | Keterangan |
 |---|---|---|
-| `url` | ✅ | URL media dari WAHA (akan di-URL-encode) |
+| `url` | ✅ | URL media dari WAHA |
 
-**Contoh:**
+> **Catatan:** Endpoint ini adalah fallback untuk media lama (sebelum fitur download diaktifkan). Gunakan `/api/media/file/{filename}` untuk media baru.
+
+### Flow Media
+
 ```
-GET /api/media/proxy?url=http%3A%2F%2Fwaha%3A3000%2Fapi%2Ffiles%2Fabc.jpg
+1. Solver kirim image + caption di grup WA
+2. WAHA kirim webhook → POST /webhooks/waha
+3. Backend download dari WAHA → simpan ke /app/media/{uuid}.jpg
+4. Simpan media_url: https://api.stc.it-jaya.id/api/media/file/{uuid}.jpg
+5. Frontend render: <img src="{media_url}">
 ```
 
-**Response `200`:** Streaming response dengan `Content-Type` sesuai media (contoh: `image/jpeg`, `video/mp4`). Body berisi data binary media.
-
-**Response `400`:** URL tidak valid (bukan URL WAHA/internal).
-
-**Response `502`:** Gagal fetch dari WAHA.
-
-> **Catatan:** Frontend tidak perlu handle proxy URL secara manual. `media_url` di timeline response (`GET /api/cases/{id}`) sudah berisi proxy URL yang bisa langsung dipakai di `<img src="...">` atau `<video src="...">`.
+> **Docker volume:** File media tersimpan di Docker volume `media_data` yang persist meski container restart.
 
 ---
 
@@ -1176,8 +1199,8 @@ https://imgur.com/app_error
 ## 12. Changelog
 
 ### v1.6 (27 Agustus 2026)
-- **Media proxy**: Endpoint `GET /api/media/proxy` untuk serve media dari WAHA yang sebelumnya hanya accessible dari dalam Docker. Frontend bisa langsung pakai `media_url` di `<img>` atau `<video>`.
-- **Media di timeline**: Setiap pesan di `GET /api/cases/{id}` sekarang include `media_url` (proxy URL) dan `media_type` (MIME type). Mendukung image + caption dan image-only replies.
+- **Media download & storage**: Backend download media dari WAHA saat webhook masuk, simpan ke Docker volume (`/app/media/`). Serve via `GET /api/media/file/{filename}`. Media persist meski container restart. Legacy proxy endpoint masih ada sebagai fallback.
+- **Media di timeline**: Setiap pesan di `GET /api/cases/{id}` sekarang include `media_url` (local file URL) dan `media_type` (MIME type). Mendukung image + caption dan image-only replies.
 - **Pushname priority**: Contact name resolution sekarang prioritize `pushname` (nama yang user set di WA) daripada `name` (phone book).
 - **Solver Contacts CRUD**: 5 endpoint baru (`GET/POST/GET/{id}/PUT/{id}/DELETE/{id}`) untuk manage kontak solver. Soft delete via `is_active` flag.
 - **Reminder (Sundul)**: 4 endpoint baru untuk kirim reminder ke solver. Manual reminder, auto reminder batch (cron), dan riwayat reminder per case.
