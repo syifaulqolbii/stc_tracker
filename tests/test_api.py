@@ -606,8 +606,8 @@ class TestMediaProxy:
         """_rewrite_media_url should rewrite WAHA internal URL to proxy URL."""
         url = main_module._rewrite_media_url("http://waha:3000/api/files/abc.jpg")
         assert "/api/media/proxy?url=" in url
-        assert url.startswith("http://localhost:8000/api/media/proxy")  # no raw waha host
-        assert "abc.jpg" in url  # original path preserved
+        assert url.startswith("http://localhost:8000/api/media/proxy")
+        assert "abc.jpg" in url
 
     def test_rewrite_media_url_localhost(self):
         """_rewrite_media_url should rewrite localhost URL to proxy URL."""
@@ -623,12 +623,78 @@ class TestMediaProxy:
         url = "https://imgur.com/something.jpg"
         assert main_module._rewrite_media_url(url) == url
 
+    @pytest.mark.asyncio
+    async def test_download_media_success(self):
+        """_download_media should download from WAHA and save locally."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "image/jpeg"}
+        mock_resp.content = b"fake image bytes"
+
+        async_client = AsyncMock()
+        async_client.get.return_value = mock_resp
+
+        with patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+             patch("builtins.open", MagicMock()):
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await main_module._download_media("http://waha:3000/api/files/abc.jpg")
+            assert result is not None
+            assert result.endswith(".jpg")
+
+    @pytest.mark.asyncio
+    async def test_download_media_failure(self):
+        """_download_media should return None on failure."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+
+        async_client = AsyncMock()
+        async_client.get.return_value = mock_resp
+
+        with patch.object(main_module.httpx, "AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await main_module._download_media("http://waha:3000/api/files/missing.jpg")
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_and_rewrite_media_success(self):
+        """_download_and_rewrite_media should return local URL on success."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "image/jpeg"}
+        mock_resp.content = b"fake image bytes"
+
+        async_client = AsyncMock()
+        async_client.get.return_value = mock_resp
+
+        with patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+             patch("builtins.open", MagicMock()):
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await main_module._download_and_rewrite_media("http://waha:3000/api/files/abc.jpg")
+            assert result is not None
+            assert "/api/media/file/" in result
+
     def test_media_proxy_invalid_url(self):
         """media_proxy should reject non-WAHA URLs."""
-        with patch.object(main_module, "db", return_value=_make_mock_db()[0]),              patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
-            tc = TestClient(main_module.app)
-            resp = tc.get("/api/media/proxy?url=https://evil.com/hack.jpg")
-            assert resp.status_code == 400
+        tc = TestClient(main_module.app)
+        resp = tc.get("/api/media/proxy?url=https://evil.com/hack.jpg")
+        assert resp.status_code == 400
+
+    def test_serve_media_file_invalid_filename(self):
+        """serve_media_file should reject invalid filenames."""
+        tc = TestClient(main_module.app)
+        # Filename with special chars should be rejected by regex
+        resp = tc.get("/api/media/file/abc!@#.jpg")
+        assert resp.status_code == 400
+
+    def test_serve_media_file_not_found(self):
+        """serve_media_file should return 404 for missing files."""
+        tc = TestClient(main_module.app)
+        # Valid filename pattern but file doesn't exist
+        resp = tc.get("/api/media/file/abcdef1234567890abcdef1234567890.jpg")
+        assert resp.status_code == 404
 
     def test_media_proxy_success(self, mock_waha):
         """media_proxy should proxy WAHA media with streaming response."""

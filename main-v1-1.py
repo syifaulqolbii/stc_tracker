@@ -47,9 +47,50 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "WAHA")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://9router.tefambo.site/v1")
 BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000")
+MEDIA_DIR = os.getenv("MEDIA_DIR", "/app/media")
 
 WAHA_HEADERS = {"X-Api-Key": WAHA_KEY}
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
+
+# Ensure media directory exists
+os.makedirs(MEDIA_DIR, exist_ok=True)
+
+
+async def _download_media(waha_url: str) -> str | None:
+    """Download media from WAHA and save locally. Return local filename or None."""
+    if not waha_url:
+        return None
+    try:
+        # Rewrite localhost -> waha for Docker networking
+        fetch_url = waha_url
+        if "localhost" in fetch_url or "127.0.0.1" in fetch_url:
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(fetch_url)
+            waha_parsed = urlparse(WAHA_URL)
+            fetch_url = urlunparse(parsed._replace(
+                scheme=waha_parsed.scheme, netloc=waha_parsed.netloc))
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=True)
+            if resp.status_code != 200:
+                log.warning("Media download failed: %s -> %s", waha_url[:80], resp.status_code)
+                return None
+            # Generate unique filename
+            ext = ".jpg"
+            ct = resp.headers.get("content-type", "")
+            if "png" in ct: ext = ".png"
+            elif "gif" in ct: ext = ".gif"
+            elif "video" in ct: ext = ".mp4"
+            elif "pdf" in ct: ext = ".pdf"
+            elif "webp" in ct: ext = ".webp"
+            filename = f"{uuid.uuid4().hex}{ext}"
+            filepath = os.path.join(MEDIA_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(resp.content)
+            log.info("Media saved: %s (%d bytes)", filename, len(resp.content))
+            return filename
+    except Exception as e:
+        log.warning("Media download error: %s -> %s", waha_url[:80], e)
+        return None
 
 
 def _rewrite_media_url(url: str | None) -> str | None:
@@ -60,6 +101,17 @@ def _rewrite_media_url(url: str | None) -> str | None:
         from urllib.parse import quote
         return f"{BACKEND_PUBLIC_URL}/api/media/proxy?url={quote(url, safe='')}" 
     return url
+
+
+async def _download_and_rewrite_media(waha_url: str | None) -> str | None:
+    """Download media from WAHA, save locally, return local URL."""
+    if not waha_url:
+        return None
+    filename = await _download_media(waha_url)
+    if filename:
+        return f"{BACKEND_PUBLIC_URL}/api/media/file/{filename}"
+    # Fallback to proxy URL if download fails
+    return _rewrite_media_url(waha_url)
 MAX_CHAIN_DEPTH = 5
 LLM_MAX_RETRIES = 3
 LLM_RETRY_DELAY = 1.0  # seconds base delay
@@ -1363,7 +1415,7 @@ async def crawl_group(
                           m.get("participant") or m.get("author") or m.get("from"),
                           (m.get("body") or "").strip(),
                           from_me=m.get("fromMe", False),
-                          media_url=_rewrite_media_url(media.get("url")),
+                          media_url=await _download_and_rewrite_media(media.get("url")),
                           media_type=media.get("mimetype"))
             stored += 1
         except Exception as e:
@@ -1390,29 +1442,47 @@ async def crawl_group(
     }
 
 
-# ---------------------------------------------------------------- Media Proxy
+# ---------------------------------------------------------------- Media Serving
+
+from starlette.responses import FileResponse
+
+@app.get("/api/media/file/{filename}", tags=["Media"],
+         summary="Serve media file lokal",
+         description="Serve media yang sudah di-download dari WAHA. Tidak perlu auth.")
+async def serve_media_file(filename: str):
+    """Serve local media file. No auth required for browser access."""
+    # Sanitize filename — only allow alphanumeric + dot + hyphen
+    import re as _re
+    if not _re.match(r'^[a-f0-9\-]+\.\w{2,5}$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath = os.path.join(MEDIA_DIR, filename)
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+    # Detect media type from extension
+    ext = os.path.splitext(filename)[1].lower()
+    media_types = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4",
+        ".pdf": "application/pdf",
+    }
+    return FileResponse(filepath, media_type=media_types.get(ext, "application/octet-stream"))
+
 
 @app.get("/api/media/proxy", tags=["Media"],
-         summary="Proxy media dari WAHA",
-         description="Proxy media (image/video/doc) dari WAHA supaya bisa diakses dari luar Docker.")
+         summary="Proxy media dari WAHA (legacy)",
+         description="Proxy media dari WAHA. Endpoint lama, gunakan /api/media/file/{filename} untuk media baru.")
 async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
-    """Proxy media dari WAHA supaya bisa diakses dari browser/frontend."""
-    # Validate: hanya boleh proxy ke WAHA
+    """Proxy media dari WAHA — legacy fallback."""
     if not url or ("waha" not in url and "localhost" not in url and "127.0.0.1" not in url):
         raise HTTPException(status_code=400, detail="Invalid media URL")
     try:
-        # Rewrite localhost/127.0.0.1 -> waha (inside Docker, localhost = this container)
         fetch_url = url
         if "localhost" in fetch_url or "127.0.0.1" in fetch_url:
-            # Replace host with WAHA_URL host (e.g. http://waha:3000)
             from urllib.parse import urlparse, urlunparse
             parsed = urlparse(fetch_url)
             waha_parsed = urlparse(WAHA_URL)
             fetch_url = urlunparse(parsed._replace(
-                scheme=waha_parsed.scheme,
-                netloc=waha_parsed.netloc,
-            ))
-            log.info("Media proxy: rewritten %s -> %s", url[:80], fetch_url[:80])
+                scheme=waha_parsed.scheme, netloc=waha_parsed.netloc))
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=True)
             if resp.status_code != 200:
