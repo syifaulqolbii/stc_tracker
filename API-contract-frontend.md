@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.5 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.6 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -16,7 +16,8 @@
 | Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health` dan `/webhooks/waha` |
 | Encoding waktu | ISO 8601 dengan timezone (TIMESTAMPTZ), contoh `2026-08-20T16:20:11.345+07:00` |
 | Realtime | Belum ada websocket. FE disarankan polling `GET /api/cases` tiap 30 dtk atau saat window focus |
-| Contact Names | Backend resolve `@lid` → nama kontak via WAHA API. `author_name` tersedia di messages & participants |
+| Contact Names | Backend resolve `@lid` → nama kontak via WAHA API (prioritas pushname > phone book). `author_name` tersedia di messages & participants |
+| Media | Image/video dari solver di-reply ke case → tersimpan di DB. `media_url` = proxy URL yang bisa diakses browser. `media_type` = MIME type. |
 
 ## 2. Enum & Konstanta
 
@@ -278,6 +279,8 @@ X-API-Key: <key>
       "author_name": null,
       "body": "punten rekan @628xxx ...",
       "from_me": true,
+      "media_url": null,
+      "media_type": null,
       "created_at": "..."
     },
     {
@@ -287,6 +290,8 @@ X-API-Key: <key>
       "author_name": "Mas Habib",
       "body": "dicek dulu mas",
       "from_me": false,
+      "media_url": null,
+      "media_type": null,
       "created_at": "..."
     },
     {
@@ -339,6 +344,8 @@ Cara render timeline:
 - `updates[].source` menjelaskan bagaimana update tertangkap:
   - `reply` = langsung reply ke pesan root bot
   - `chain` = reply ke pesan orang lain (eskalasi) — layak diberi ikon khusus
+- `media_url` berisi proxy URL yang bisa diakses browser (via `GET /api/media/proxy`). Kalau `null`, tidak ada media. Render sebagai gambar/video inline di timeline.
+- `media_type` = MIME type media (contoh: `image/jpeg`, `video/mp4`). Gunakan untuk menentukan render: `image/*` → `<img>`, `video/*` → `<video>`, lainnya → link download.
 - `author` berformat `xxx@lid` (WhatsApp LID). `author_name` adalah nama kontak yang di-resolve otomatis dari phone book via WAHA API.
 
 **Performance:**
@@ -483,7 +490,157 @@ X-API-Key: <key>
 
 ---
 
-## 5. Format Error
+
+---
+
+## 5. Solver Contacts CRUD
+
+Tabel kontak solver yang bisa di-manage dari Swagger/API. Data ini bisa dipakai untuk populate dropdown mention di frontend.
+
+### 5.1 `GET /api/solver-contacts` — Daftar kontak solver
+
+**Headers:** `X-API-Key: <key>`
+
+**Query params (semua opsional):**
+| Param | Tipe | Keterangan |
+|---|---|---|
+| `is_active` | bool | Filter status aktif. Kosongkan untuk semua. |
+| `q` | string | Pencarian substring di nama atau role |
+
+**Response `200`:**
+
+
+---
+
+### 5.2 `POST /api/solver-contacts` — Tambah kontak baru
+
+**Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
+
+**Request:**
+
+- `name` wajib, string.
+- `phone_number` wajib, string. Harus unik di antara kontak aktif. Format internasional tanpa `+` (`628xxx`).
+- `role` opsional, string (posisi/jabatan).
+
+**Response `201`:**
+
+
+**Error:** `409` Nomor sudah terdaftar.
+
+---
+
+### 5.3 `GET /api/solver-contacts/{id\}` — Detail kontak
+
+**Response `200`:** Object kontak lengkap.
+
+**Error:** `404` Kontak tidak ditemukan.
+
+---
+
+### 5.4 `PUT /api/solver-contacts/{id\}json
+{
+  "name": "Mas Habib Updated",
+  "role": "Solver Senior"
+}
+ — Soft delete kontak
+
+Data tidak dihapus, hanya `is_active` di-set `false`.
+
+**Response `200`:** `{ "ok": true }`
+
+**Error:** `404` Tidak ditemukan.
+
+---
+
+## 6. Reminders (Sundul)
+
+Fitur untuk mengingatkan solver agar follow up case yang belum ditangani. Bot akan reply ke pesan case asli di grup WA dengan mention solver.
+
+### 6.1 `POST /api/cases/{id\}/reminder` — Manual reminder
+
+**Headers:** `X-API-Key: <key>`
+
+**Request (opsional):**
+
+- `message` opsional. Default: "Halo, mohon bantuannya untuk follow up case ini. Terima kasih."
+
+Bot akan reply ke `wa_message_id` case dengan pesan + mention solver.
+
+**Response `200`:**
+
+
+---
+
+### 6.2 `GET /api/cases/{id\}/reminder` — Riwayat reminder case
+
+**Response `200`:**
+json
+{
+  "checked": 15,
+  "reminded": 3,
+  "cases": [
+    { "id": 42, "case_code": "INC000023470570", "reminder_count": 1 },
+    { "id": 43, "case_code": "INC000098765432", "reminder_count": 2 }
+  ]
+}
+```
+
+**Contoh crontab (reminder tiap 2 jam):**
+```
+0 */2 * * * curl -X POST "http://localhost:8000/api/reminders/run?hours=2" -H "X-API-Key: your-key"
+```
+
+---
+
+### 6.4 `GET /api/reminders/pending` — Case yang perlu reminder
+
+**Headers:** `X-API-Key: <key>`
+
+**Query params:**
+| Param | Default | Keterangan |
+|---|---|---|
+| `hours` | 2 | Jam idle minimum |
+| `limit` | 50 | Max jumlah case |
+| `area_id` | - | Filter Area ID |
+| `regional_id` | - | Filter Regional ID |
+| `sumber_ticket` | - | Filter sumber ticket |
+| `jenis_case` | - | Filter jenis case |
+
+**Response `200`:**
+
+
+---
+
+## 7. Media Proxy
+
+Endpoint untuk proxy media (image/video/doc) dari WAHA supaya bisa diakses dari browser/frontend. WAHA mengembalikan URL internal Docker (`http://waha:3000/api/files/...`) yang tidak bisa diakses dari luar.
+
+### 7.1 `GET /api/media/proxy` — Proxy media dari WAHA
+
+**Tidak perlu auth** (agar bisa diakses langsung oleh `<img>` / `<video>` di browser).
+
+**Query params:**
+| Param | Required | Keterangan |
+|---|---|---|
+| `url` | ✅ | URL media dari WAHA (akan di-URL-encode) |
+
+**Contoh:**
+```
+GET /api/media/proxy?url=http%3A%2F%2Fwaha%3A3000%2Fapi%2Ffiles%2Fabc.jpg
+```
+
+**Response `200`:** Streaming response dengan `Content-Type` sesuai media (contoh: `image/jpeg`, `video/mp4`). Body berisi data binary media.
+
+**Response `400`:** URL tidak valid (bukan URL WAHA/internal).
+
+**Response `502`:** Gagal fetch dari WAHA.
+
+> **Catatan:** Frontend tidak perlu handle proxy URL secara manual. `media_url` di timeline response (`GET /api/cases/{id}`) sudah berisi proxy URL yang bisa langsung dipakai di `<img src="...">` atau `<video src="...">`.
+
+---
+
+## 8. Error
+## 8. Format Error
 
 FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Validasi body gagal → `422` dengan `detail` berisi array lokasi field. FE cukup menampilkan `detail` apa adanya.
 
@@ -495,7 +652,7 @@ FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Valida
 | `429` | Rate limit terlampaui (default 60 req/menit per IP) |
 | `502` | WAHA tidak terjangkau atau session tidak WORKING |
 
-## 6. Spesifikasi Form Dinamis
+## 9. Spesifikasi Form Dinamis
 
 ### Alur Form Input
 1. **Pilih Area** → dropdown `GET /api/areas`
@@ -607,7 +764,7 @@ Link Evidence :
 - Multi-select kontak → dikirim sebagai `mentions: [{number, name}]`.
 - Saran: daftar kontak solver di-hardcode di FE dulu (atau tabel config nanti), user tinggal centang.
 
-## 7. Alur Integrasi yang Disarankan
+## 10. Alur Integrasi yang Disarankan
 
 1. **Load lookup data saat init:**
    - `GET /api/areas` → populate dropdown Area
@@ -635,7 +792,7 @@ Ditangani oleh:
     ↳ Budi Santoso: done mas, sudah diluruskan    [chain · 10:32] ✅ done
 ```
 
-## 8. Contoh Lengkap: Semua Kombinasi Sumber Ticket × Jenis Case
+## 11. Contoh Lengkap: Semua Kombinasi Sumber Ticket × Jenis Case
 
 Berikut 9 kombinasi lengkap dengan request body, field required, dan format pesan WhatsApp yang dihasilkan.
 
@@ -1016,7 +1173,15 @@ https://imgur.com/app_error
 | Web IT | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
-## 9. Changelog
+## 12. Changelog
+
+### v1.6 (27 Agustus 2026)
+- **Media proxy**: Endpoint `GET /api/media/proxy` untuk serve media dari WAHA yang sebelumnya hanya accessible dari dalam Docker. Frontend bisa langsung pakai `media_url` di `<img>` atau `<video>`.
+- **Media di timeline**: Setiap pesan di `GET /api/cases/{id}` sekarang include `media_url` (proxy URL) dan `media_type` (MIME type). Mendukung image + caption dan image-only replies.
+- **Pushname priority**: Contact name resolution sekarang prioritize `pushname` (nama yang user set di WA) daripada `name` (phone book).
+- **Solver Contacts CRUD**: 5 endpoint baru (`GET/POST/GET/{id}/PUT/{id}/DELETE/{id}`) untuk manage kontak solver. Soft delete via `is_active` flag.
+- **Reminder (Sundul)**: 4 endpoint baru untuk kirim reminder ke solver. Manual reminder, auto reminder batch (cron), dan riwayat reminder per case.
+- **Required fields**: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). `REQUIRED_FIELDS` dict tersedia di backend untuk validasi frontend.
 
 ### v1.5 (27 Agustus 2026)
 - **Contoh lengkap**: Semua 9 kombinasi Sumber Ticket × Jenis Case dengan request body, response, dan format pesan WA.

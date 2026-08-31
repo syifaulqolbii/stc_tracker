@@ -76,11 +76,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Moban FU Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.2. "
+        "Backend API untuk Moban FU Case Tracker v1.6. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
-        "Area/Regional hierarchy, dan Sumber Ticket/Jenis Case dari tabel lookup."
+        "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
+        "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.2.0",
+    version="1.6.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -90,6 +91,7 @@ app = FastAPI(
         {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
         {"name": "Reminders", "description": "Reminder proaktif untuk case yang belum di-handle"},
         {"name": "Webhooks", "description": "Webhook receiver dari WAHA (WhatsApp HTTP API)"},
+        {"name": "Media", "description": "Proxy media (image/video) dari WAHA untuk akses dari luar Docker"},
         {"name": "System", "description": "Health check dan operasi sistem"},
     ],
 )
