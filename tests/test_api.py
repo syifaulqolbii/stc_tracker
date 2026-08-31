@@ -599,6 +599,60 @@ class TestMediaHandling:
             assert params[6] is None  # media_type
 
 
+
+
+class TestMediaProxy:
+    def test_rewrite_media_url_waha(self):
+        """_rewrite_media_url should rewrite WAHA internal URL to proxy URL."""
+        url = main_module._rewrite_media_url("http://waha:3000/api/files/abc.jpg")
+        assert "/api/media/proxy?url=" in url
+        assert url.startswith("http://localhost:8000/api/media/proxy")  # no raw waha host
+        assert "abc.jpg" in url  # original path preserved
+
+    def test_rewrite_media_url_localhost(self):
+        """_rewrite_media_url should rewrite localhost URL to proxy URL."""
+        url = main_module._rewrite_media_url("http://localhost:3000/api/files/test.png")
+        assert "/api/media/proxy?url=" in url
+
+    def test_rewrite_media_url_none(self):
+        """_rewrite_media_url should return None for None input."""
+        assert main_module._rewrite_media_url(None) is None
+
+    def test_rewrite_media_url_external(self):
+        """_rewrite_media_url should NOT rewrite external URLs."""
+        url = "https://imgur.com/something.jpg"
+        assert main_module._rewrite_media_url(url) == url
+
+    def test_media_proxy_invalid_url(self):
+        """media_proxy should reject non-WAHA URLs."""
+        with patch.object(main_module, "db", return_value=_make_mock_db()[0]),              patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            resp = tc.get("/api/media/proxy?url=https://evil.com/hack.jpg")
+            assert resp.status_code == 400
+
+    def test_media_proxy_success(self, mock_waha):
+        """media_proxy should proxy WAHA media with streaming response."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "image/jpeg"}
+
+        async def fake_aiter_bytes(chunk_size):
+            yield b"fake image data"
+
+        mock_resp.aiter_bytes = fake_aiter_bytes
+
+        async_client = AsyncMock()
+        async_client.get.return_value = mock_resp
+
+        with patch.object(main_module.httpx, "AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            tc = TestClient(main_module.app)
+            resp = tc.get("/api/media/proxy?url=http://waha:3000/api/files/abc.jpg")
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] == "image/jpeg"
+
+
 class TestReminder:
     def test_reminder_manual_success(self, mock_waha):
         """Manual reminder should send reply and update DB."""

@@ -19,6 +19,7 @@ import httpx
 import psycopg
 import psycopg_pool
 from fastapi import FastAPI, Query, Request, Response, HTTPException, Depends
+from starlette.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from psycopg.rows import dict_row
@@ -45,9 +46,20 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "WAHA")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://9router.tefambo.site/v1")
+BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000")
 
 WAHA_HEADERS = {"X-Api-Key": WAHA_KEY}
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
+
+
+def _rewrite_media_url(url: str | None) -> str | None:
+    """Rewrite internal WAHA media URL to public proxy URL."""
+    if not url:
+        return None
+    if "waha" in url or "localhost" in url or "127.0.0.1" in url:
+        from urllib.parse import quote
+        return f"{BACKEND_PUBLIC_URL}/api/media/proxy?url={quote(url, safe='')}" 
+    return url
 MAX_CHAIN_DEPTH = 5
 LLM_MAX_RETRIES = 3
 LLM_RETRY_DELAY = 1.0  # seconds base delay
@@ -576,7 +588,7 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     body = (p.get("body") or "").strip()
     has_media = p.get("hasMedia", False)
     media = p.get("media") or {}
-    media_url = media.get("url")
+    media_url = _rewrite_media_url(media.get("url"))
     media_type = media.get("mimetype")
 
     # Skip if no body AND no media
@@ -1349,7 +1361,7 @@ async def crawl_group(
                           m.get("participant") or m.get("author") or m.get("from"),
                           (m.get("body") or "").strip(),
                           from_me=m.get("fromMe", False),
-                          media_url=media.get("url"),
+                          media_url=_rewrite_media_url(media.get("url")),
                           media_type=media.get("mimetype"))
             stored += 1
         except Exception as e:
@@ -1374,6 +1386,31 @@ async def crawl_group(
         "store_errors": store_errors,
         "process_errors": process_errors,
     }
+
+
+# ---------------------------------------------------------------- Media Proxy
+
+@app.get("/api/media/proxy", tags=["Media"],
+         summary="Proxy media dari WAHA",
+         description="Proxy media (image/video/doc) dari WAHA supaya bisa diakses dari luar Docker.")
+async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
+    """Proxy media dari WAHA supaya bisa diakses dari browser/frontend."""
+    # Validate: hanya boleh proxy ke WAHA
+    if not url or ("waha" not in url and "localhost" not in url and "127.0.0.1" not in url):
+        raise HTTPException(status_code=400, detail="Invalid media URL")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=WAHA_HEADERS, follow_redirects=True)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail="Media not found")
+            media_type = resp.headers.get("content-type", "application/octet-stream")
+            async def stream():
+                async for chunk in resp.aiter_bytes(8192):
+                    yield chunk
+            return StreamingResponse(stream(), media_type=media_type)
+    except httpx.RequestError as e:
+        log.warning("Media proxy error: %s", e)
+        raise HTTPException(status_code=502, detail=f"Failed to fetch media: {e}")
 
 
 @app.get("/health", tags=["System"],

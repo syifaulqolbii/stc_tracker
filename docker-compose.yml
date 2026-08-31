@@ -25,6 +25,7 @@ services:
       - BACKEND_API_KEY=${BACKEND_API_KEY:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
       - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
+      - BACKEND_PUBLIC_URL=${BACKEND_PUBLIC_URL:-http://localhost:8000}
     depends_on:
       db:
         condition: service_healthy
