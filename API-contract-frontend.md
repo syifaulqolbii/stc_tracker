@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.6 · **Tanggal:** 27 Agustus 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.7 · **Tanggal:** 2 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -13,7 +13,7 @@
 |---|---| 
 | Base URL (prod) | `https://api.stc.it-jaya.id` (via nginx + SSL) |
 | Format | JSON, `Content-Type: application/json` |
-| Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health` dan `/webhooks/waha` |
+| Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health`, `/webhooks/waha`, dan `/api/auth/access-code` |
 | Encoding waktu | ISO 8601 dengan timezone (TIMESTAMPTZ), contoh `2026-08-20T16:20:11.345+07:00` |
 | Realtime | Belum ada websocket. FE disarankan polling `GET /api/cases` tiap 30 dtk atau saat window focus |
 | Contact Names | Backend resolve `@lid` → nama kontak via WAHA API (prioritas pushname > phone book). `author_name` tersedia di messages & participants |
@@ -65,7 +65,53 @@
 
 ## 3. Endpoints
 
-### 3.1 `POST /api/cases` — Buat & kirim case ke grup WA
+### 3.1 `POST /api/auth/access-code` — Login dengan kode akses
+
+Gate akses untuk frontend. User masukkan kode akses → dapat JWT token.
+
+**Tidak perlu API key.**
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "code": "YOUR_ACCESS_CODE"
+}
+```
+
+**Response `200`:**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 86400
+}
+```
+
+- `token` — JWT token, simpan di frontend (localStorage). Gunakan sebagai `Authorization: Bearer <token>` di request berikutnya.
+- `expires_in` — waktu expired dalam detik (default 86400 = 24 jam).
+
+**Error:**
+| Status | Keterangan |
+|---|---|
+| `401` | Kode akses tidak valid |
+| `503` | Access codes belum di-configure di server |
+
+**Flow login:**
+```
+1. Frontend tampilkan form input kode akses
+2. User input kode → POST /api/auth/access-code
+3. Backend validasi kode → return JWT token
+4. Frontend simpan token di localStorage
+5. Semua request API: Authorization: Bearer <token>
+```
+
+---
+
+### 3.2 `POST /api/cases` — Buat & kirim case ke grup WA
 
 **Headers:**
 ```
@@ -193,7 +239,7 @@ https://drive.google.com/example2
 
 ---
 
-### 3.2 `GET /api/cases` — Daftar case (dashboard list)
+### 3.3 `GET /api/cases` — Daftar case (dashboard list)
 
 **Headers:**
 ```
@@ -239,7 +285,7 @@ Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ac
 
 ---
 
-### 3.3 `GET /api/cases/{id}` — Detail + timeline rantai
+### 3.4 `GET /api/cases/{id}` — Detail + timeline rantai
 
 **Headers:**
 ```
@@ -357,7 +403,7 @@ Cara render timeline:
 
 ---
 
-### 3.4 `POST /api/cases/{id}/status` — Koreksi status manual
+### 3.5 `POST /api/cases/{id}/status` — Koreksi status manual
 
 Untuk tombol "Tandai selesai" / "Buka ulang" di UI.
 
@@ -377,7 +423,7 @@ Content-Type: application/json
 
 ---
 
-### 3.5 `POST /api/crawl` — Backfill histori grup (admin)
+### 3.6 `POST /api/crawl` — Backfill histori grup (admin)
 
 **Headers:**
 ```
@@ -401,7 +447,7 @@ Operasi ini berat (tarik histori WA + proses). Jangan dipanggil otomatis dari UI
 
 ---
 
-### 3.6 `GET /health` — Health check
+### 3.7 `GET /health` — Health check
 
 **Tidak perlu auth.**
 
@@ -1197,6 +1243,11 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.7 (2 September 2026)
+- **Access Code Auth**: Endpoint baru `POST /api/auth/access-code` untuk login dengan kode akses. Return JWT token untuk akses frontend. Access codes di-config via env var `ACCESS_CODES` (comma-separated). JWT expiry via `JWT_EXPIRY_HOURS` (default 24 jam).
+- **Frontend gate**: Frontend harus login dulu sebelum bisa akses dashboard. API key auth tetap berjalan untuk backend API.
+- **Nginx update**: Frontend dihapus dari VPS (sudah deploy di tempat lain). Semua request ke `api.stc.it-jaya.id` langsung ke backend.
 
 ### v1.6 (27 Agustus 2026)
 - **Media download & storage**: Backend download media dari WAHA saat webhook masuk, simpan ke Docker volume (`/app/media/`). Serve via `GET /api/media/file/{filename}`. Media persist meski container restart. Legacy proxy endpoint masih ada sebagai fallback.

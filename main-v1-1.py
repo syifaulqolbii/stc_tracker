@@ -145,6 +145,7 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
     openapi_tags=[
+        {"name": "Auth", "description": "Login dengan kode akses untuk frontend gate"},
         {"name": "Cases", "description": "CRUD dan manajemen case"},
         {"name": "Lookup", "description": "Data referensi: Area, Regional, Sumber Ticket, Jenis Case"},
         {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
