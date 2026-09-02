@@ -34,7 +34,7 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - media_data:/app/media
+      - ./media:/app/media
     networks:
       - moban-net
     healthcheck:
@@ -72,8 +72,6 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
-  media_data:
     driver: local
 
 networks:
