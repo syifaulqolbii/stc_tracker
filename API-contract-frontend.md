@@ -250,6 +250,7 @@ X-API-Key: <key>
 
 | Param | Contoh | Keterangan |
 |---|---|---| 
+| `include_deleted` | `true` | Sertakan case yang sudah di-delete (default: false) |
 | `status` | `open` | filter enum status |
 | `case_type` | `Non Order` | filter jenis case (nama dari tabel lookup) |
 | `area_id` | `1` | filter berdasarkan Area ID |
@@ -403,7 +404,28 @@ Cara render timeline:
 
 ---
 
-### 3.5 `POST /api/cases/{id}/status` — Koreksi status manual
+### 3.5 `DELETE /api/cases/{id}` — Hapus case (soft delete)
+
+Tandai case sebagai deleted. Case tidak benar-benar dihapus dari DB, hanya ditandai dengan `deleted_at` timestamp.
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Response `200`:**
+```json
+{
+  "ok": true,
+  "case_code": "INC000023470570"
+}
+```
+
+**Error:** `404` Case tidak ditemukan atau sudah di-delete.
+
+---
+
+### 3.6 `POST /api/cases/{id}/status` — Koreksi status manual
 
 Untuk tombol "Tandai selesai" / "Buka ulang" di UI.
 
@@ -423,7 +445,7 @@ Content-Type: application/json
 
 ---
 
-### 3.6 `POST /api/crawl` — Backfill histori grup (admin)
+### 3.7 `POST /api/crawl` — Backfill histori grup (admin)
 
 **Headers:**
 ```
@@ -447,7 +469,7 @@ Operasi ini berat (tarik histori WA + proses). Jangan dipanggil otomatis dari UI
 
 ---
 
-### 3.7 `GET /health` — Health check
+### 3.8 `GET /health` — Health check
 
 **Tidak perlu auth.**
 
@@ -1248,6 +1270,7 @@ https://imgur.com/app_error
 - **Access Code Auth**: Endpoint baru `POST /api/auth/access-code` untuk login dengan kode akses. Return JWT token untuk akses frontend. Access codes di-config via env var `ACCESS_CODES` (comma-separated). JWT expiry via `JWT_EXPIRY_HOURS` (default 24 jam).
 - **Frontend gate**: Frontend harus login dulu sebelum bisa akses dashboard. API key auth tetap berjalan untuk backend API.
 - **Nginx update**: Frontend dihapus dari VPS (sudah deploy di tempat lain). Semua request ke `api.stc.it-jaya.id` langsung ke backend.
+- **Delete case (soft delete)**: Endpoint baru `DELETE /api/cases/{id}` untuk soft delete case. Case ditandai dengan `deleted_at` timestamp. Query `GET /api/cases` default hanya menampilkan case aktif (belum di-delete). Gunakan `?include_deleted=true` untuk melihat semua case.
 
 ### v1.6 (27 Agustus 2026)
 - **Media download & storage**: Backend download media dari WAHA saat webhook masuk, simpan ke Docker volume (`/app/media/`). Serve via `GET /api/media/file/{filename}`. Media persist meski container restart. Legacy proxy endpoint masih ada sebagai fallback.

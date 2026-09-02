@@ -893,6 +893,7 @@ def list_cases(
     regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
     sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
     q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
+    include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
@@ -906,8 +907,9 @@ def list_cases(
              LEFT JOIN regionals r ON c.regional_id = r.id
              LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
              LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
-             WHERE true"""
-    args: list = []
+             WHERE true
+             AND (c.deleted_at IS NULL OR %s = true)"""
+    args: list = [include_deleted]
     if status:
         sql += " AND c.status = %s"
         args.append(status)
@@ -946,10 +948,10 @@ def case_detail(case_id: int, request: Request,
                        LEFT JOIN regionals r ON c.regional_id = r.id
                        LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
                        LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
-                       WHERE c.id = %s""", (case_id,))
+                       WHERE c.id = %s AND c.deleted_at IS NULL""", (case_id,))
         case = cur.fetchone()
         if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+            raise HTTPException(status_code=404, detail="Case not found or already deleted")
         cur.execute(
             """SELECT wa_message_id, quoted_id, author, author_name, body, from_me,
                       media_url, media_type, created_at
@@ -993,6 +995,21 @@ def set_status(case_id: int, inp: StatusIn, request: Request,
 
 
 # ---------------------------------------------------------------- Lookup API
+
+@app.delete("/api/cases/{case_id}", tags=["Cases"],
+            summary="Hapus case (soft delete)",
+            description="Tandai case sebagai deleted. Case tidak benar-benar dihapus dari DB, hanya ditandai dengan deleted_at timestamp.")
+def delete_case(case_id: int, request: Request,
+                _auth: str = Depends(verify_api_key),
+                _rate: None = Depends(check_rate_limit)):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, case_code FROM cases WHERE id = %s AND deleted_at IS NULL", (case_id,))
+        case = cur.fetchone()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found or already deleted")
+        cur.execute("UPDATE cases SET deleted_at = now(), updated_at = now() WHERE id = %s", (case_id,))
+        conn.commit()
+    return {"ok": True, "case_code": case["case_code"]}
 
 @app.get("/api/areas", tags=["Lookup"],
          summary="Daftar semua Area",
@@ -1286,6 +1303,7 @@ def list_solver_contacts(
 ):
     sql = "SELECT id, name, phone_number, role, is_active, created_at, updated_at FROM solver_contacts WHERE true"
     args: list = []
+    args.append(include_deleted)
     if is_active is not None:
         sql += " AND is_active = %s"
         args.append(is_active)
