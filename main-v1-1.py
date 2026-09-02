@@ -100,6 +100,18 @@ async def _download_media(waha_url: str) -> str | None:
         return None
 
 
+def _ext_from_content_type(content_type: str) -> str:
+    """Map content-type to file extension."""
+    ct = content_type.lower()
+    if "jpeg" in ct or "jpg" in ct: return ".jpg"
+    if "png" in ct: return ".png"
+    if "gif" in ct: return ".gif"
+    if "webp" in ct: return ".webp"
+    if "video" in ct: return ".mp4"
+    if "pdf" in ct: return ".pdf"
+    return ".bin"
+
+
 def _rewrite_media_url(url: str | None) -> str | None:
     """Rewrite internal WAHA media URL to public proxy URL."""
     if not url:
@@ -1520,7 +1532,11 @@ async def serve_media_file(filename: str):
          summary="Proxy media dari WAHA (legacy)",
          description="Proxy media dari WAHA. Endpoint lama, gunakan /api/media/file/{filename} untuk media baru.")
 async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
-    """Proxy media dari WAHA — legacy fallback."""
+    """Proxy media dari WAHA — legacy fallback.
+    
+    Lazy migration: when media is accessed via proxy, download and save locally.
+    Update database so future requests use local file URL.
+    """
     if not url or ("waha" not in url and "localhost" not in url and "127.0.0.1" not in url):
         raise HTTPException(status_code=400, detail="Invalid media URL")
     try:
@@ -1536,10 +1552,25 @@ async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail="Media not found")
             media_type = resp.headers.get("content-type", "application/octet-stream")
-            async def stream():
-                async for chunk in resp.aiter_bytes(8192):
-                    yield chunk
-            return StreamingResponse(stream(), media_type=media_type)
+            
+            # Lazy migration: download and save locally
+            content = await resp.aread()
+            filename = f"{uuid.uuid4().hex}{_ext_from_content_type(media_type)}"
+            filepath = os.path.join(MEDIA_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(content)
+            
+            # Update database: replace proxy URL with local file URL
+            local_url = f"{BACKEND_PUBLIC_URL}/api/media/file/{filename}"
+            try:
+                with db() as conn, conn.cursor() as cur:
+                    cur.execute("UPDATE wa_messages SET media_url = %s WHERE media_url = %s", (local_url, url))
+                    conn.commit()
+                    log.info("Migrated media: %s -> %s", url[:60], filename)
+            except Exception as e:
+                log.warning("Failed to update media_url in DB: %s", e)
+            
+            return StreamingResponse(iter([content]), media_type=media_type)
     except httpx.RequestError as e:
         log.warning("Media proxy error: %s", e)
         raise HTTPException(status_code=502, detail=f"Failed to fetch media: {e}")
