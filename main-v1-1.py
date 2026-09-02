@@ -11,9 +11,11 @@ import json
 import logging
 import os
 import re
+import jwt
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import httpx
 import psycopg
@@ -51,6 +53,11 @@ MEDIA_DIR = os.getenv("MEDIA_DIR", "/app/media")
 
 WAHA_HEADERS = {"X-Api-Key": WAHA_KEY}
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
+
+# Access code auth (frontend gate)
+ACCESS_CODES = [c.strip() for c in os.getenv("ACCESS_CODES", "").split(",") if c.strip()]
+JWT_SECRET = os.getenv("JWT_SECRET", uuid.uuid4().hex)
+JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
 
 # Ensure media directory exists
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -776,6 +783,26 @@ class WahaWebhook(BaseModel):
 
 
 # ---------------------------------------------------------------- Cases API
+
+
+# ---------------------------------------------------------------- Auth (Access Code Login)
+
+class AccessCodeIn(BaseModel):
+    code: str
+
+@app.post("/api/auth/access-code", tags=["Auth"],
+          summary="Login dengan kode akses",
+          description="Validasi kode akses dan return JWT token untuk akses frontend.")
+def login_with_access_code(inp: AccessCodeIn):
+    if not ACCESS_CODES:
+        raise HTTPException(status_code=503, detail="Access codes not configured on server")
+    if inp.code not in ACCESS_CODES:
+        raise HTTPException(status_code=401, detail="Invalid access code")
+    token = jwt.encode(
+        {"sub": "access_code", "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS)},
+        JWT_SECRET, algorithm="HS256"
+    )
+    return {"token": token, "expires_in": JWT_EXPIRY_HOURS * 3600}
 
 @app.post("/api/cases", status_code=201, tags=["Cases"],
           summary="Buat & kirim case ke grup WA",
