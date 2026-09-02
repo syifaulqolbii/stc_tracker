@@ -1317,7 +1317,6 @@ def list_solver_contacts(
 ):
     sql = "SELECT id, name, phone_number, role, is_active, created_at, updated_at FROM solver_contacts WHERE true"
     args: list = []
-    args.append(include_deleted)
     if is_active is not None:
         sql += " AND is_active = %s"
         args.append(is_active)
