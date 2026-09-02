@@ -650,7 +650,7 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     body = (p.get("body") or "").strip()
     has_media = p.get("hasMedia", False)
     media = p.get("media") or {}
-    media_url = _rewrite_media_url(media.get("url"))
+    raw_media_url = media.get("url")
     media_type = media.get("mimetype")
 
     # Skip if no body AND no media
@@ -661,6 +661,8 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     quoted = extract_quoted_id(p)
     author = p.get("participant") or p.get("author") or p.get("from")
 
+    # Download media locally (async, non-blocking for message processing)
+    media_url = await _download_and_rewrite_media(raw_media_url)
     store_message(wa_mid, quoted, author, body, media_url=media_url, media_type=media_type)
 
     # Resolve contact name in background (non-blocking)
