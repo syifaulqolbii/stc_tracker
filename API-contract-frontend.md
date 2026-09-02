@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.7 · **Tanggal:** 2 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.8 · **Tanggal:** 2 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.2, schema-v1-2.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -1265,6 +1265,9 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.8 (2 September 2026)
+- **Media download fix**: Webhook handler sekarang download media ke Docker volume (`/app/media/`) daripada cuma simpan proxy URL. File media persist meski container restart. Fix untuk error "media not found" yang muncul karena proxy URL ke WAHA expired/inaccessible.
 
 ### v1.7 (2 September 2026)
 - **Access Code Auth**: Endpoint baru `POST /api/auth/access-code` untuk login dengan kode akses. Return JWT token untuk akses frontend. Access codes di-config via env var `ACCESS_CODES` (comma-separated). JWT expiry via `JWT_EXPIRY_HOURS` (default 24 jam).
