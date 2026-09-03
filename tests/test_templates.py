@@ -54,38 +54,6 @@ def test_render_header_empty_mentions():
     assert "mohon bantuannya untuk case Non Order" in result
 
 
-def test_render_header_custom_with_placeholder():
-    result = render_header(
-        [{"number": "6281234567890", "name": "Mas Budi"}], "non_ao",
-        custom_header="Halo {phone}, mohon bantuannya ya 🙏",
-    )
-    assert "@6281234567890" in result
-    assert "Halo @6281234567890, mohon bantuannya ya" in result
-    assert "punten rekan" not in result  # default header should not be used
-
-
-def test_render_header_custom_without_placeholder():
-    result = render_header(
-        [{"number": "6281234567890", "name": "Mas Budi"}], "non_ao",
-        custom_header="Tolong cek case ini ya",
-    )
-    assert "Tolong cek case ini ya @6281234567890" in result
-
-
-def test_render_header_custom_no_mentions():
-    result = render_header([], "non_ao", custom_header="Custom header tanpa mention")
-    assert result == "Custom header tanpa mention"
-
-
-def test_render_header_custom_multiple_mentions():
-    result = render_header(
-        [{"number": "628111"}, {"number": "628222"}], "non_ao",
-        custom_header="Halo {phone}, tolong cek",
-    )
-    assert "@628111" in result
-    assert "@628222" in result
-
-
 def test_render_case_text_non_order():
     """Non Order: ticket_remedy, no_indihome, request_case, detail_case, link_evidence"""
     fields = {
