@@ -701,6 +701,7 @@ class TestMediaProxy:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.headers = {"content-type": "image/jpeg"}
+        mock_resp.aread = AsyncMock(return_value=b"fake image data")
 
         async def fake_aiter_bytes(chunk_size):
             yield b"fake image data"
