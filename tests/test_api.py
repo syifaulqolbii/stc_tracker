@@ -137,10 +137,8 @@ class TestCreateCase:
         assert data["wa_message_id"] == "test_msg_123"
         assert "punten rekan" in data["text"]
         assert "@6281234567890" in data["text"]
-        assert "#Non Order" in data["text"]
-        assert "Area : Area 1" in data["text"]
-        assert "Regional : Regional 2" in data["text"]
-        assert "Sumber Ticket : Grapari" in data["text"]
+        # Compact header: #Grapari_Non Order_Area 1_Regional 2
+        assert "#Grapari_Non Order_Area 1_Regional 2" in data["text"]
         assert "Asal Grapari : GraPARI Bandung" in data["text"]
 
     def test_create_mobile_case(self, client):

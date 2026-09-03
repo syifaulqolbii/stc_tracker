@@ -153,12 +153,9 @@ def test_render_case_text_with_new_fields():
         sumber_ticket="Grapari",
         asal_grapari="GraPARI Bandung",
     )
-    assert "#Non Order" in result
-    assert "Area : Area 1" in result
-    assert "Regional : Regional 2" in result
-    assert "Sumber Ticket : Grapari" in result
+    # Compact header: #SumberTicket_JenisCase_Area_Regional
+    assert "#Grapari_Non Order_Area 1_Regional 2" in result
     assert "Asal Grapari : GraPARI Bandung" in result
-    assert "Jenis Case : Non Order" in result
     assert "Ticket Remedy : INC123" in result
 
 
@@ -170,23 +167,21 @@ def test_render_case_text_without_new_fields():
     assert "Regional :" not in result
     assert "Sumber Ticket :" not in result
     assert "Asal Grapari :" not in result
-    # But jenis_case is always rendered
-    assert "Jenis Case : Non Order" in result
+    # Compact header: only jenis_case when no area/regional/sumber
+    assert "#Non Order" in result
 
 
 def test_render_case_text_skips_empty():
     result = render_case_text("non_order", {"ticket_remedy": "INC123"})
     assert "Ticket Remedy : INC123" in result
     lines = result.strip().split("\n")
-    # Header (#Non Order) + Jenis Case + Ticket Remedy = 3 lines
-    assert len(lines) == 3
+    # Header (#Non Order) + Ticket Remedy = 2 lines (compact format)
+    assert len(lines) == 2
 
 
 def test_render_case_text_empty_fields():
     result = render_case_text("non_order", {})
     assert "#Non Order" in result
-    # Only header + Jenis Case line
-    assert "Jenis Case : Non Order" in result
 
 
 def test_all_case_types_have_fields():
@@ -294,11 +289,8 @@ def test_render_case_text_full_non_order():
         regional_name="Jabo",
         sumber_ticket="STC",
     )
-    assert "#Non Order" in result
-    assert "Area : Area 2" in result
-    assert "Regional : Jabo" in result
-    assert "Sumber Ticket : STC" in result
-    assert "Jenis Case : Non Order" in result
+    # Compact header: #STC_Non Order_Area 2_Jabo
+    assert "#STC_Non Order_Area 2_Jabo" in result
     assert "Ticket Remedy : INC111" in result
     assert "Nomer Indihome : 0211111111" in result
     assert "Request Case : Setup new connection" in result

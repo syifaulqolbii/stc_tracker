@@ -206,15 +206,11 @@ Aturan:
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
 
-**Format pesan WhatsApp (otomatis):**
+**Format pesan WhatsApp (otomatis) — compact:**
 ```
 punten rekan @6281113021236 mohon bantuannya untuk case Non AO ada 1 case lagi
 
-#Non AO
-Area : Area 1
-Regional : Sumbagut
-Sumber Ticket : STC
-Jenis Case : Non AO
+#STC_Non AO_Area 1_Sumbagut
 Ticket Remedy : INC000023470570
 Order ID : MOk4260811023440131b25f60
 Nomer Indihome : 0211234567
@@ -225,6 +221,8 @@ Link Evidence :
 https://prnt.sc/example1
 https://drive.google.com/example2
 ```
+
+> **Catatan compact header:** Format `#SumberTicket_JenisCase_Area_Regional`. Beberapa bagian bisa kosong jika field tidak diisi (contoh: `#Non AO` jika hanya jenis case).
 
 > **Catatan mention:** Backend menggunakan `@<nomor telepon>` di text, bukan `@<nama>`. WhatsApp otomatis render nama kontak dari phone book. Mention hanya work untuk kontak yang sudah save nomor bot.
 

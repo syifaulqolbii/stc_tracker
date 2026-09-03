@@ -148,23 +148,28 @@ def render_case_text(case_type: str, fields: dict,
                      asal_grapari: str | None = None) -> str:
     """Render case fields into a formatted WhatsApp message body.
 
-    New v1.2 fields (area, regional, sumber_ticket, asal_grapari) are rendered
-    at the top. Old fields follow after.
+    Compact header format: #SumberTicket_JenisCase_Area_Regional
+    Example: #STC_Non AO_Area 3_Jateng DIY
     """
     label = TYPE_LABELS.get(case_type, case_type.upper())
-    lines = [f"#{label}"]
 
-    # Render new v1.2 fields first
-    if area_name:
-        lines.append(f"Area : {area_name}")
-    if regional_name:
-        lines.append(f"Regional : {regional_name}")
+    # Build compact header line
+    header_parts = []
     if sumber_ticket:
-        lines.append(f"Sumber Ticket : {sumber_ticket}")
+        header_parts.append(sumber_ticket)
+    if label:
+        header_parts.append(label)
+    if area_name:
+        header_parts.append(area_name)
+    if regional_name:
+        header_parts.append(regional_name)
+    header_line = "_" .join(header_parts) if header_parts else label
+
+    lines = [f"#{header_line}"]
+
+    # Asal Grapari as separate note if present
     if asal_grapari:
         lines.append(f"Asal Grapari : {asal_grapari}")
-    if label:
-        lines.append(f"Jenis Case : {label}")
 
     # Render old fields (all optional)
     field_defs = CASE_FIELDS.get(case_type, CASE_FIELDS["non_order"])
