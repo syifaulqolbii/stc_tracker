@@ -744,6 +744,7 @@ class CaseIn(BaseModel):
     jenis_case: str | None = Field(None, description="Jenis Case: Non Order, Non AO, atau Mobile. Lihat GET /api/jenis-cases")
     asal_grapari: str | None = Field(None, description="Asal GraPARI (hanya jika Sumber Ticket = Grapari). Free text.")
     mentions: list[Mention] = Field([], description="Daftar kontak solver yang akan di-mention di grup WA")
+    custom_header: str | None = Field(None, description="Custom header pesan. Kosongkan untuk default.")
     fields: dict = Field({}, description="Field case lama (semua opsional): ticket_remedy, no_indihome, detail_case, evidence, dll")
 
 class StatusIn(BaseModel):
@@ -848,7 +849,7 @@ async def create_case(inp: CaseIn, request: Request,
             if row:
                 regional_name = row["name"]
 
-    header = render_header([m.model_dump() for m in inp.mentions], jenis_key) if inp.mentions else ""
+    header = render_header([m.model_dump() for m in inp.mentions], jenis_key, custom_header=inp.custom_header) if (inp.mentions or inp.custom_header) else ""
     body_text = render_case_text(
         jenis_key, f,
         area_name=area_name,

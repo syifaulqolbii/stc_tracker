@@ -130,6 +130,7 @@ Content-Type: application/json
   "mentions": [
     { "number": "6281113021236", "name": "Mas Habib" }
   ],
+  "custom_header": null,
   "fields": {
     "ticket_remedy": "INC000023470570",
     "order_id": "MOk4260811023440131b25f60",
@@ -156,6 +157,7 @@ Content-Type: application/json
   "mentions": [
     { "number": "6281234567890", "name": "Budi" }
   ],
+  "custom_header": null,
   "fields": {
     "ticket_remedy": "INC000098765432",
     "no_indihome": "0315678901",
@@ -180,6 +182,7 @@ Content-Type: application/json
   "mentions": [
     { "number": "6289876543210" }
   ],
+  "custom_header": null,
   "fields": {
     "ticket_remedy": "INC000055555555",
     "msisdn": "6281299988877",
@@ -199,6 +202,7 @@ Aturan:
 - `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih.
 - `fields.link_evidence` — array of URL. Bisa multiple link. Kosongkan array jika tidak ada evidence.
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
+- `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
 
@@ -223,6 +227,26 @@ https://drive.google.com/example2
 ```
 
 > **Catatan mention:** Backend menggunakan `@<nomor telepon>` di text, bukan `@<nama>`. WhatsApp otomatis render nama kontak dari phone book. Mention hanya work untuk kontak yang sudah save nomor bot.
+
+**Contoh dengan custom_header:**
+Request:
+```json
+{
+  "mentions": [{ "number": "6281113021236" }],
+  "custom_header": "Halo {phone}, mohon bantuannya ya 🙏",
+  "jenis_case": "Non AO",
+  "fields": { "ticket_remedy": "INC123", "order_id": "O123", "no_indihome": "021123" }
+}
+```
+Pesan terkirim:
+```
+Halo @6281113021236, mohon bantuannya ya 🙏
+
+#Non AO
+...
+```
+
+> **Catatan custom_header:** Placeholder `{phone}` akan diganti dengan `@<nomor>` untuk setiap mention. Jika tidak ada `{phone}` di custom header, mention akan ditambahkan di akhir.
 
 **Response `201`:**
 ```json
