@@ -201,6 +201,8 @@ class TestCrawlGroup:
         mock_cursor.__exit__ = MagicMock(return_value=False)
 
         with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "_get_active_groups",
+                          return_value=[{"id": 1, "name": "Grup A", "chat_id": "group@g.us"}]), \
              patch.object(main_module.httpx, "AsyncClient") as mock_http:
             async_client = AsyncMock()
             get_resp = MagicMock()
@@ -211,9 +213,12 @@ class TestCrawlGroup:
             mock_http.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await main_module.crawl_group(limit=2)
+            result = await main_module.crawl_group(limit=2, group_id=None)
             assert result["fetched"] == 2
             assert result["stored"] == 2
+            # per-group breakdown
+            assert result["groups"][0]["group_name"] == "Grup A"
+            assert result["groups"][0]["fetched"] == 2
 
     @pytest.mark.asyncio
     async def test_crawl_handles_store_error(self):
@@ -231,6 +236,8 @@ class TestCrawlGroup:
                 raise Exception("DB error")
 
         with patch.object(main_module, "db") as mock_db, \
+             patch.object(main_module, "_get_active_groups",
+                          return_value=[{"id": 1, "name": "Grup A", "chat_id": "group@g.us"}]), \
              patch.object(main_module, "store_message", side_effect=mock_store), \
              patch.object(main_module.httpx, "AsyncClient") as mock_http:
             async_client = AsyncMock()
@@ -242,7 +249,7 @@ class TestCrawlGroup:
             mock_http.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await main_module.crawl_group(limit=2)
+            result = await main_module.crawl_group(limit=2, group_id=None)
             assert result["fetched"] == 2
             assert result["stored"] == 1  # only 1 stored successfully
             assert result["store_errors"] == 1
@@ -251,6 +258,8 @@ class TestCrawlGroup:
     async def test_crawl_returns_error_counts(self):
         """Crawl response includes error counts."""
         with patch.object(main_module, "db") as mock_db, \
+             patch.object(main_module, "_get_active_groups",
+                          return_value=[{"id": 1, "name": "Grup A", "chat_id": "group@g.us"}]), \
              patch.object(main_module.httpx, "AsyncClient") as mock_http:
             async_client = AsyncMock()
             get_resp = MagicMock()
@@ -261,8 +270,53 @@ class TestCrawlGroup:
             mock_http.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            result = await main_module.crawl_group(limit=100)
+            result = await main_module.crawl_group(limit=100, group_id=None)
             assert "store_errors" in result
             assert "process_errors" in result
             assert result["store_errors"] == 0
             assert result["process_errors"] == 0
+
+    @pytest.mark.asyncio
+    async def test_crawl_single_group(self):
+        """Crawl with explicit group_id crawls only that group."""
+        msgs = [{"id": {"_serialized": "msg1"}, "body": "test", "from": "groupB@g.us"}]
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "_get_group",
+                          return_value={"id": 2, "name": "Grup B", "chat_id": "groupB@g.us"}) as mock_group, \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_http:
+            async_client = AsyncMock()
+            get_resp = MagicMock()
+            get_resp.status_code = 200
+            get_resp.json.return_value = msgs
+            get_resp.raise_for_status = MagicMock()
+            async_client.get.return_value = get_resp
+            mock_http.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await main_module.crawl_group(limit=1, group_id=2)
+            assert result["fetched"] == 1
+            assert result["groups"][0]["group_name"] == "Grup B"
+            mock_group.assert_called_once_with(2)
+            # WAHA dipanggil dengan chat_id grup B
+            crawl_url = [str(a[0][0]) for a in async_client.get.call_args_list
+                         if "chats" in str(a[0][0])][0]
+            assert "groupB@g.us" in crawl_url
+
+    @pytest.mark.asyncio
+    async def test_crawl_invalid_group_404(self):
+        """Crawl with invalid group_id → HTTP 404."""
+        with patch.object(main_module, "db") as mock_db, \
+             patch.object(main_module, "_get_group", return_value=None):
+            with pytest.raises(Exception) as exc_info:
+                await main_module.crawl_group(limit=1, group_id=999)
+            assert exc_info.value.status_code == 404

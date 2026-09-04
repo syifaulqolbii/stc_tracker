@@ -1,8 +1,9 @@
 # PRD — Backend Moban FU Case Tracker
 
-**Versi:** 1.1 (supersedes v1.0) · **Tanggal:** 19 Agustus 2026 · **Owner:** Backend
+**Versi:** 1.3 (supersedes v1.1) · **Tanggal:** 4 September 2026 · **Owner:** Backend
 **Stack:** FastAPI (Python) · Supabase (PostgreSQL) · WAHA (WhatsApp HTTP API) · OpenRouter (LLM fallback)
 **Perubahan v1.1:** arsitektur multi-group dibatalkan — semua tim solusi (1–5) berada di **satu grup WA yang sama**. Mekanisme tracking diganti dari "hop lintas grup" menjadi **reply-chain traversal di dalam satu grup**.
+**Perubahan v1.3 (multi-grup dikembalikan):** switcher **Grup A / Grup B** — tabel `wa_groups` + admin CRUD, `group_id` **wajib** saat create case, tracking webhook/crawl/reminder/filter dashboard **per-grup**. Status "non-goal multi-grup" pada v1.1 dicabut.
 
 ---
 
@@ -23,7 +24,7 @@ Moban (follow-up) case berjalan di **satu grup WhatsApp** berisi agen dan semua 
 | G3 | Rantai eskalasi (case lewat solver mana saja) terekam | Timeline case menampilkan semua peserta rantai |
 | G4 | Histori grup bisa di-crawl untuk backfill | Endpoint crawl memproses N pesan terakhir |
 
-**Non-goal (fase ini):** frontend, multi-grup, multi-nomor WA, notifikasi proaktif (fase 2).
+**Non-goal (fase ini):** frontend, multi-nomor WA, notifikasi proaktif (fase 2). ~~Multi-grup~~ — **sudah didukung sejak v1.3** (switcher Grup A/B).
 
 ## 3. User Stories
 
@@ -38,23 +39,34 @@ Moban (follow-up) case berjalan di **satu grup WhatsApp** berisi agen dan semua 
 ```
 Form Web ──► Backend API ──► Supabase (PostgreSQL)
                  │
-                 ├────► WAHA ──► GRUP (satu grup, semua tim)  (kirim case)
+                 ├────► WAHA ──► GRUP A / GRUP B (switcher: case → grup terpilih)
                  │
                  ◄──── WAHA webhook (message, message.ack)
                  │
             Pencocokan: regex INC → reply-chain traversal → LLM fallback
+                 (per-grup: case hanya di-link dari pesan di grupnya sendiri)
 ```
 
 **Kemampuan WAHA yang dipakai:**
-- `POST /api/sendText` — kirim pesan, `mentions`, mengembalikan message ID.
+- `POST /api/sendText` — kirim pesan, `mentions`, mengembalikan message ID. `chatId` = grup tujuan case (dari `cases.group_id → wa_groups.chat_id`).
 - Webhook `message` — tiap pesan masuk membawa `payload.id`, `from`, `body`, dan referensi quoted message (`replyTo` / `_data.quotedMsgId`) saat pesan itu reply.
 - Webhook `message.ack` — status terkirim/dibaca pesan keluar.
-- `GET /api/{session}/chats/{chatId}/messages?limit=` — crawl histori grup (quoted-info ikut terbawa di `_data`).
-- Bot cukup anggota **satu grup** ini saja.
+- `GET /api/{session}/chats/{chatId}/messages?limit=` — crawl histori per grup.
+- Bot anggota **semua grup terdaftar** (`wa_groups` aktif). Pesan dari grup yang **tidak terdaftar** diabaikan.
 
 ## 5. Data Model (Supabase / PostgreSQL)
 
 ```sql
+-- Grup WhatsApp tujuan case (v1.3)
+CREATE TABLE wa_groups (
+    id            SERIAL PRIMARY KEY,
+    name          VARCHAR(100) NOT NULL UNIQUE,   -- label "Grup A" / "Grup B"
+    chat_id       VARCHAR(128) NOT NULL UNIQUE,   -- 120363xxx@g.us
+    is_active     BOOLEAN NOT NULL DEFAULT true,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    updated_at    TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE cases (
     id            SERIAL PRIMARY KEY,
     case_code     VARCHAR(50) UNIQUE,      -- INC000023470570 / Case ID; fallback CASE-0001
@@ -65,6 +77,7 @@ CREATE TABLE cases (
     wa_message_id VARCHAR(128) UNIQUE,     -- ROOT pesan case di grup (jangkar rantai)
     status        VARCHAR(20) NOT NULL DEFAULT 'open',
     ack           VARCHAR(20),
+    group_id      INT REFERENCES wa_groups(id) ON DELETE SET NULL,  -- v1.3: grup tujuan
     created_at    TIMESTAMPTZ DEFAULT now(),
     updated_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -98,40 +111,51 @@ CREATE TABLE progress_updates (
 ## 6. Logika Inti
 
 ### 6.1 Kirim case (US-1)
-`POST /api/cases` → rakit teks via template → WAHA `sendText` (dengan `mentions`) → simpan `cases` (`wa_message_id` = root) + baris `wa_messages` (`from_me=true`).
+`POST /api/cases` (dengan `group_id` wajib — grup tujuan dari switcher) → resolve `wa_groups.chat_id` → rakit teks via template → WAHA `sendText` (dengan `mentions`, `chatId` = grup tujuan) → simpan `cases` (`wa_message_id` = root, `group_id` tercatat) + baris `wa_messages` (`from_me=true`).
 
 ### 6.2 Pencocokan pesan masuk (waterfall)
 Setiap event `message` dari grup:
 
+0. **Filter grup:** resolve grup dari `payload.from` di tabel `wa_groups` (aktif). Pesan dari grup tak terdaftar → skip.
 1. **Rekam dulu** ke `wa_messages` (id, quoted_id, author, body) — semua pesan, apapun isinya.
 2. **Regex INC** di body → case ketemu (`source=rule`).
 3. **Reply langsung ke root:** `quoted_id == cases.wa_message_id` → case ketemu (`source=reply`).
 4. **Chain traversal:** telusuri parent ke atas maks. 5 level:
    `quoted_id → wa_messages.quoted_id → ...` sampai menemukan baris yang `wa_message_id`-nya adalah root case atau sudah punya `case_id` terisi. Ini yang menangkap "Solusi 2 reply ke pesan Solusi 1" (`source=chain`).
-5. **LLM fallback (OpenRouter):** tidak ada INC & rantai buntu → kirim body + daftar case open ke model, terapkan jika confidence ≥ 0.7 (`source=llm`).
+5. **LLM fallback (OpenRouter):** tidak ada INC & rantai buntu → kirim body + daftar case open **di grup tersebut** ke model, terapkan jika confidence ≥ 0.7 (`source=llm`).
 6. Parse status: keyword (`done/selesai/beres/lurus` → done; `kendala/gagal/stuck` → issue; `proses/dicek/otw/FU` → in_progress), persen (`75%`). LLM juga mengembalikan status untuk kalimat bebas.
-7. Simpan `progress_updates` (dedup by `wa_message_id`), isi `wa_messages.case_id`, update `cases.status`.
+7. **Verifikasi grup:** case hasil rule/chain/LLM hanya di-link kalau `case.group_id == grup asal pesan` (anti false-positive lintas grup).
+8. Simpan `progress_updates` (dedup by `wa_message_id`), isi `wa_messages.case_id`, update `cases.status`.
 
 ### 6.3 Rantai eskalasi (G3)
 `GET /api/cases/{id}` mengembalikan timeline: semua `wa_messages` dengan `case_id` tsb, diurutkan waktu, membentuk pohon via `quoted_id`. Daftar peserta unik (author) pada rantai = riwayat solver yang menangani case.
 
 ### 6.4 Crawl (G4)
-`POST /api/crawl?limit=200` → tarik histori via WAHA → **pass 1:** simpan semua pesan ke `wa_messages` (agar rantai lengkap) → **pass 2:** proses tiap pesan dengan waterfall 6.2. Dua pass penting karena urutan pesan histori tidak menjamin parent diproses sebelum child.
+`POST /api/crawl?limit=200&group_id=` → tarik histori via WAHA (**per grup**; tanpa `group_id` = semua grup aktif) → **pass 1:** simpan semua pesan ke `wa_messages` (agar rantai lengkap) → **pass 2:** proses tiap pesan dengan waterfall 6.2. Dua pass penting karena urutan pesan histori tidak menjamin parent diproses sebelum child.
 
 ### 6.5 Batasan
-- Pesan balasan **tanpa quote dan tanpa INC** → hanya LLM (konteks case open) yang bisa menangkap; akurasi tidak dijamin. Mitigasi: sosialisasi "selalu reply/quote pesan case".
+- Pesan balasan **tanpa quote dan tanpa INC** → hanya LLM (konteks case open **di grup tersebut**) yang bisa menangkap; akurasi tidak dijamin. Mitigasi: sosialisasi "selalu reply/quote pesan case".
 - Edit/hapus pesan tidak mengubah catatan (tambah event `message.revoked` di fase 2).
 - Chain traversal dibatasi 5 level untuk mencegah loop; kedalaman rantai real jarang >3.
+- **Isolasi per-grup (v1.3):** case hanya di-link dari pesan yang berasal dari grup yang sama dengannya (`case.group_id == grup asal pesan`). Reply-chain yang kebetulan menunjuk case grup lain tetap di-link, tapi diverifikasi dan ditolak → mencegah false-positive lintas grup.
+- Grup yang dinonaktifkan (`is_active=false`) tidak bisa dipilih saat create case; webhook-nya berhenti di-track.
+- `case_code` unik global — case yang sama tidak bisa aktif di dua grup sekaligus; re-FU dengan grup berbeda memindahkan case ke grup baru.
 
 ## 7. API Specification
 
 | Method & Path | Deskripsi | Response |
 |---|---|---|
-| `POST /api/cases` | Buat & kirim case ke grup | `201 {id, case_code, wa_message_id, text}` |
-| `GET /api/cases` | List case (query: `status`, `case_type`, `q`) | `[{id, case_code, title, status, updated_at}]` |
+| `POST /api/cases` | Buat & kirim case ke grup tujuan (`group_id` **wajib**) | `201 {id, case_code, group_id, group_name, wa_message_id, text}` |
+| `GET /api/cases` | List case (query: `status`, `case_type`, `group_id`, `q`) | `[{id, case_code, title, status, group_id, group_name, updated_at}]` |
 | `GET /api/cases/{id}` | Detail + timeline rantai + peserta | `{case, messages[] (pohon), updates[], participants[]}` |
 | `POST /api/cases/{id}/status` | Koreksi manual | update `source=manual` |
-| `POST /api/crawl` | Backfill histori (query: `limit`) | `{fetched, stored, updates_applied}` |
+| `DELETE /api/cases/{id}` | Soft delete case | `{ok, case_code}` |
+| `GET /api/groups` | Daftar grup WA (switcher) | `[{id, name, chat_id, is_active}]` |
+| `POST /api/groups` | Tambah grup WA | `201 {id, name, chat_id, is_active}` |
+| `GET /api/groups/{id}` | Detail grup | row grup |
+| `PUT /api/groups/{id}` | Update grup (label/chat_id/is_active) | row grup |
+| `DELETE /api/groups/{id}` | Nonaktifkan grup (soft delete) | `{ok}` |
+| `POST /api/crawl` | Backfill histori (query: `limit`, `group_id`; default semua grup) | `{fetched, stored, updates_applied, groups[]}` |
 | `POST /webhooks/waha` | Receiver event WAHA | `200 {ok}` (proses async) |
 | `GET /health` | Healthcheck db + WAHA | `{status, db, waha}` |
 
@@ -150,13 +174,15 @@ DATABASE_URL=postgresql://postgres.xxx:pass@aws-0-ap-southeast-1.pooler.supabase
 WAHA_URL=http://localhost:3000
 WAHA_API_KEY=<plain key>
 WAHA_SESSION=default
-WA_GROUP_ID=<id grup @g.us — satu-satunya grup>
+WA_GROUP_ID=<id grup @g.us — seed awal tabel wa_groups ("Grup A") saat tabel kosong; bukan lagi satu-satunya target kirim>
 OPENROUTER_API_KEY=<opsional>
 OPENROUTER_MODEL=google/gemini-2.0-flash-001
 BACKEND_API_KEY=<auth endpoint /api>
 ```
 
 Supabase: pakai connection string pooler (port 6543); free tier 500 MB sangat cukup. Webhook WAHA: events `message`, `message.ack`, `session.status`.
+
+**Migrasi v1.3:** jalankan `schema-multi-group.sql` (tabel `wa_groups` + `cases.group_id`). Grup didaftarkan via `POST /api/groups` (atau seed otomatis dari `WA_GROUP_ID` saat startup jika tabel kosong); case lama (group_id NULL) di-backfill otomatis ke grup seed.
 
 ## 9. Non-Fungsional
 

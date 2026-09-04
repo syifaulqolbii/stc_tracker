@@ -75,18 +75,21 @@ def _create_case_mock_sequence(
     regional_name=None,
     case_id=42,
     case_code="INC000023470570",
+    group_id=1,
 ):
     """Build the fetchone mock sequence for create_case endpoint.
-    
+
     The endpoint makes these DB calls in order:
     1. _resolve_jenis_case(name) → SELECT id FROM jenis_cases WHERE name = %s
        (skipped if name is None — returns early without DB call)
     2. _resolve_sumber_ticket(name) → SELECT id FROM sumber_tickets WHERE name = %s
        (skipped if name is None — returns early without DB call)
-    3. Resolve area_name (if area_id) → SELECT name FROM areas WHERE id = %s
-    4. Resolve regional_name (if regional_id) → SELECT name FROM regionals WHERE id = %s
-    5. INSERT RETURNING → {id, case_code}
-    6. INSERT wa_messages → None
+    3. _get_group(group_id) → SELECT * FROM wa_groups WHERE id = %s AND is_active = true
+       (always called — group_id is required)
+    4. Resolve area_name (if area_id) → SELECT name FROM areas WHERE id = %s
+    5. Resolve regional_name (if regional_id) → SELECT name FROM regionals WHERE id = %s
+    6. INSERT RETURNING → {id, case_code}
+    7. INSERT wa_messages → None
     """
     seq = []
     # 1. _resolve_jenis_case (only if name is not None)
@@ -95,15 +98,17 @@ def _create_case_mock_sequence(
     # 2. _resolve_sumber_ticket (only if name is not None)
     if sumber_ticket_name:
         seq.append({"id": 2})
-    # 3. area name (only if area_name is provided, meaning area_id was set)
+    # 3. _get_group(group_id)
+    seq.append({"id": group_id, "name": "Grup A", "chat_id": "120363xxx@g.us"})
+    # 4. area name (only if area_name is provided, meaning area_id was set)
     if area_name:
         seq.append({"name": area_name})
-    # 4. regional name (only if regional_name is provided)
+    # 5. regional name (only if regional_name is provided)
     if regional_name:
         seq.append({"name": regional_name})
-    # 5. INSERT RETURNING
+    # 6. INSERT RETURNING
     seq.append({"id": case_id, "case_code": case_code})
-    # 6. INSERT wa_messages
+    # 7. INSERT wa_messages
     seq.append(None)
     return seq
 
@@ -119,6 +124,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "area_id": 1,
             "regional_id": 2,
             "sumber_ticket": "Grapari",
@@ -150,6 +156,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "jenis_case": "Mobile",
             "fields": {
                 "msisdn": "6281234567890",
@@ -170,6 +177,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "jenis_case": "Non AO",
             "fields": {
                 "ticket_remedy": "INC999",
@@ -191,6 +199,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "jenis_case": "invalid_type",
             "fields": {"detail_case": "Test"},
         })
@@ -208,6 +217,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "jenis_case": "Non Order",
             "fields": {"ticket_remedy": "INC123"},
         })
@@ -225,6 +235,7 @@ class TestCreateCase:
         )
 
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "jenis_case": "Non Order",
             "fields": {},
         })
@@ -242,12 +253,39 @@ class TestCreateCase:
             case_id=49,
         )
         response = tc.post("/api/cases", json={
+            "group_id": 1,
             "case_type": "stc",  # legacy field
             "fields": {"ticket_remedy": "INC123"},
         })
         assert response.status_code == 201
         data = response.json()
         assert "#Non Order" in data["text"]
+
+    def test_create_case_requires_group_id(self, client):
+        """group_id is required (wajib pilih grup) — missing → 422."""
+        tc, mock_cursor = client
+        response = tc.post("/api/cases", json={
+            "jenis_case": "Non Order",
+            "fields": {"ticket_remedy": "INC123"},
+        })
+        assert response.status_code == 422
+        assert "group_id" in str(response.json()["detail"])
+
+    def test_create_case_invalid_group(self, client):
+        """Invalid/inactive group_id → 404."""
+        tc, mock_cursor = client
+        # sequence: jenis lookup ok, then _get_group returns None
+        mock_cursor.fetchone.side_effect = [
+            {"id": 1},  # jenis_case lookup
+            None,       # group not found/inactive
+        ]
+        response = tc.post("/api/cases", json={
+            "group_id": 999,
+            "jenis_case": "Non Order",
+            "fields": {"ticket_remedy": "INC123"},
+        })
+        assert response.status_code == 404
+        assert "Group not found" in response.json()["detail"]
 
 
 class TestHealthCheck:
@@ -541,6 +579,128 @@ class TestSolverContacts:
             assert response.status_code == 404
 
 
+class TestGroups:
+    """CRUD untuk grup WhatsApp (switcher multi-grup)."""
+
+    GROUP_ROW = {"id": 1, "name": "Grup A", "chat_id": "120363001@g.us",
+                 "is_active": True, "created_at": "...", "updated_at": "..."}
+
+    def test_create_group(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,  # duplicate chat_id check (no existing)
+            self.GROUP_ROW,
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/groups", json={
+                "name": "Grup A",
+                "chat_id": "120363001@g.us",
+            })
+            assert response.status_code == 201
+            data = response.json()
+            assert data["name"] == "Grup A"
+            assert data["chat_id"] == "120363001@g.us"
+
+    def test_create_group_duplicate_chat_id(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # duplicate found
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/groups", json={
+                "name": "Grup B",
+                "chat_id": "120363001@g.us",
+            })
+            assert response.status_code == 409
+
+    def test_create_group_invalid_chat_id(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/groups", json={
+                "name": "Grup X",
+                "chat_id": "bisanya-nomor-aja",
+            })
+            assert response.status_code == 422
+
+    def test_list_groups(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": True},
+            {"id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": True},
+        ]
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups?is_active=true")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 2
+            assert data[0]["name"] == "Grup A"
+
+    def test_get_group(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[self.GROUP_ROW])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups/1")
+            assert response.status_code == 200
+            assert response.json()["name"] == "Grup A"
+
+    def test_get_group_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups/999")
+            assert response.status_code == 404
+
+    def test_update_group(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # exists
+            {**self.GROUP_ROW, "name": "Grup A Updated"},  # RETURNING row
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/groups/1", json={"name": "Grup A Updated"})
+            assert response.status_code == 200
+            assert response.json()["name"] == "Grup A Updated"
+
+    def test_update_group_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/groups/999", json={"name": "Test"})
+            assert response.status_code == 404
+
+    def test_update_group_duplicate_chat_id(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # exists
+            {"id": 2},  # duplicate chat_id found on another group
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/groups/1", json={"chat_id": "120363002@g.us"})
+            assert response.status_code == 409
+
+    def test_soft_delete_group(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},  # exists & active
+            None,       # update
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.delete("/api/groups/1")
+            assert response.status_code == 200
+            assert response.json()["ok"] is True
+
+    def test_soft_delete_group_not_found(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,  # not found or already inactive
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.delete("/api/groups/999")
+            assert response.status_code == 404
+
+
 class TestMediaHandling:
     """Test handling of image + caption and image-only replies from WAHA."""
 
@@ -722,9 +882,10 @@ class TestReminder:
     def test_reminder_manual_success(self, mock_waha):
         """Manual reminder should send reply and update DB."""
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
-            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
              "mentions": [{"number": "6281234567890", "name": "Budi"}],
              "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # group resolution
             None,  # UPDATE reminder_count
             None,  # INSERT reminder_log
         ])
@@ -749,7 +910,7 @@ class TestReminder:
     def test_reminder_case_done(self, mock_waha):
         """Cannot send reminder to a done case."""
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
-            {"id": 6, "status": "done", "wa_message_id": "case_mid_123",
+            {"id": 6, "status": "done", "group_id": 1, "wa_message_id": "case_mid_123",
              "mentions": [], "reminder_count": 0},
         ])
         with patch.object(main_module, "db", return_value=mock_conn):
@@ -760,9 +921,10 @@ class TestReminder:
 
     def test_reminder_custom_message(self, mock_waha):
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
-            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
              "mentions": [{"number": "6281234567890", "name": "Budi"}],
              "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # group resolution
             None,  # UPDATE
             None,  # INSERT log
         ])
@@ -796,11 +958,12 @@ class TestReminder:
 
     def test_run_auto_reminders(self, mock_waha):
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # group resolution
             None,  # UPDATE
             None,  # INSERT log
         ])
         mock_cursor.fetchall.return_value = [
-            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
              "mentions": [{"number": "6281234567890", "name": "Budi"}],
              "reminder_count": 0},
         ]
@@ -837,8 +1000,9 @@ class TestReminder:
     def test_reminder_no_mentions(self, mock_waha):
         """Reminder should work even when case has no stored mentions."""
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
-            {"id": 6, "status": "open", "wa_message_id": "case_mid_123",
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
              "mentions": [], "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # group resolution
             None,  # UPDATE
             None,  # INSERT log
         ])

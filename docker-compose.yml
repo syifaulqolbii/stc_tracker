@@ -59,6 +59,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./schema-v1-2.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./seed-v1-2.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - ./schema-multi-group.sql:/docker-entrypoint-initdb.d/03-multigroup.sql:ro
     ports:
       - "5432:5432"
     networks:

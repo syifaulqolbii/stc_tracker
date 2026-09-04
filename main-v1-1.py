@@ -1,6 +1,7 @@
-"""Moban FU Case Tracker v1.2 — single group, reply-chain traversal.
+"""Moban FU Case Tracker v1.7 — multi-group, reply-chain traversal.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
+Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -141,24 +142,27 @@ _rate_buckets: dict[str, list[float]] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _seed_default_group()
     await _fetch_contacts()
     yield
 
 app = FastAPI(
     title="Moban FU Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.6. "
+        "Backend API untuk Moban FU Case Tracker v1.7. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
+        "multi-grup WA (switcher tujuan case), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.6.0",
+    version="1.7.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
     openapi_tags=[
         {"name": "Auth", "description": "Login dengan kode akses untuk frontend gate"},
         {"name": "Cases", "description": "CRUD dan manajemen case"},
+        {"name": "Groups", "description": "CRUD grup WhatsApp (switcher tujuan case)"},
         {"name": "Lookup", "description": "Data referensi: Area, Regional, Sumber Ticket, Jenis Case"},
         {"name": "Solver Contacts", "description": "CRUD kontak solver (whitelist mention)"},
         {"name": "Reminders", "description": "Reminder proaktif untuk case yang belum di-handle"},
@@ -251,8 +255,9 @@ def db():
 # ---------------------------------------------------------------- WAHA client
 
 async def waha_send(text: str, mentions: list[str] | None = None,
-                    reply_to: str | None = None) -> str | None:
-    payload = {"session": WAHA_SESSION, "chatId": WA_GROUP_ID, "text": text}
+                    reply_to: str | None = None,
+                    chat_id: str | None = None) -> str | None:
+    payload = {"session": WAHA_SESSION, "chatId": chat_id or WA_GROUP_ID, "text": text}
     if mentions:
         payload["mentions"] = mentions
     if reply_to:
@@ -476,9 +481,14 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
     return None, ""
 
 
-def open_case_codes() -> list[str]:
+def open_case_codes(group_id: int | None = None) -> list[str]:
     with db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT case_code FROM cases WHERE status != 'done' AND case_code IS NOT NULL")
+        if group_id is not None:
+            cur.execute("""SELECT case_code FROM cases
+                           WHERE status != 'done' AND case_code IS NOT NULL AND group_id = %s""",
+                        (group_id,))
+        else:
+            cur.execute("SELECT case_code FROM cases WHERE status != 'done' AND case_code IS NOT NULL")
         return [r["case_code"] for r in cur.fetchall()]
 
 
@@ -530,6 +540,57 @@ def _resolve_jenis_case_name(name: str | None) -> str:
         return name
     # Try legacy mapping
     return LEGACY_CASE_TYPE_MAP.get(name, "non_order")
+
+
+# ---------------------------------------------------------------- Group helpers
+
+def _get_group(group_id: int) -> dict | None:
+    """Resolve grup aktif by ID. Return row atau None."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE id = %s AND is_active = true", (group_id,))
+        return cur.fetchone()
+
+
+def _get_group_by_chat(chat_id: str | None) -> dict | None:
+    """Resolve grup aktif dari chat id (@g.us). Return row atau None."""
+    if not chat_id:
+        return None
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE chat_id = %s AND is_active = true", (chat_id,))
+        return cur.fetchone()
+
+
+def _get_active_groups() -> list[dict]:
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE is_active = true ORDER BY name")
+        return cur.fetchall()
+
+
+def _seed_default_group():
+    """Bootstrap: kalau tabel wa_groups kosong dan env WA_GROUP_ID terisi,
+    seed satu baris supaya instalasi lama tidak patah. Case lama (group_id NULL)
+    di-backfill ke grup hasil seed. Grup baru ditambahkan lewat admin CRUD /api/groups."""
+    if not WA_GROUP_ID:
+        return
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM wa_groups")
+            if cur.fetchone()["n"] == 0:
+                cur.execute(
+                    "INSERT INTO wa_groups (name, chat_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    ("Grup A", WA_GROUP_ID),
+                )
+                log.info("Seeded default group %s from WA_GROUP_ID", WA_GROUP_ID)
+            # Backfill legacy cases (group_id NULL) ke grup env default
+            cur.execute(
+                """UPDATE cases SET group_id = g.id
+                   FROM wa_groups g
+                   WHERE g.chat_id = %s AND cases.group_id IS NULL""",
+                (WA_GROUP_ID,),
+            )
+            conn.commit()
+    except Exception as e:
+        log.warning("Failed to seed default group: %s", e)
 
 
 # ---------------------------------------------------------------- LLM fallback
@@ -656,8 +717,9 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     if p.get("fromMe"):
         log.debug("SKIP: fromMe=true")
         return False
-    if WA_GROUP_ID and p.get("from") != WA_GROUP_ID:
-        log.warning("SKIP: from=%s != WA_GROUP_ID=%s", p.get("from"), WA_GROUP_ID)
+    group = _get_group_by_chat(p.get("from"))
+    if not group:
+        log.warning("SKIP: from=%s bukan grup terdaftar", p.get("from"))
         return False
     body = (p.get("body") or "").strip()
     has_media = p.get("hasMedia", False)
@@ -702,7 +764,7 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     # Skip LLM when case is already found: chain/reply already links the message,
     # no need for LLM to guess status (saves 9-10s per message)
     if case is None:
-        ai = await parse_llm(body, open_case_codes())
+        ai = await parse_llm(body, open_case_codes(group["id"]))
         if ai and (ai.get("confidence") or 0) >= 0.7:
             if ai.get("case_code"):
                 case = find_case_by_code(ai["case_code"])
@@ -710,6 +772,11 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
                 parsed["status"] = ai.get("status")
                 parsed["note"] = ai.get("note")
                 source, conf = "llm", ai.get("confidence")
+
+    # Verifikasi grup: case dari grup lain tidak boleh di-link (anti false-positive)
+    if case is not None and case.get("group_id") != group["id"]:
+        log.debug("SKIP: case %s milik grup lain", case.get("case_code"))
+        case = None
 
     if case is None:
         return False
@@ -738,6 +805,7 @@ class Mention(BaseModel):
     name: str | None = Field(None, description="Nama kontak (opsional, hanya untuk tampilan)")
 
 class CaseIn(BaseModel):
+    group_id: int = Field(..., description="ID grup WA tujuan. Lihat GET /api/groups (wajib)")
     area_id: int | None = Field(None, description="ID Area. Lihat GET /api/areas")
     regional_id: int | None = Field(None, description="ID Regional (tergantung Area). Lihat GET /api/areas/{area_id}/regionals")
     sumber_ticket: str | None = Field(None, description="Sumber Ticket: STC, Grapari, atau Web IT. Lihat GET /api/sumber-tickets")
@@ -770,6 +838,20 @@ class SolverContactUpdate(BaseModel):
     phone_number: str | None = Field(None, description="Nomor WA format internasional tanpa +")
     role: str | None = Field(None, description="Posisi/role solver")
     is_active: bool | None = Field(None, description="Status aktif (false = soft delete)")
+
+
+class GroupIn(BaseModel):
+    name: str = Field(..., description="Label grup (contoh: 'Grup A')")
+    chat_id: str = Field(..., description="ID grup WhatsApp, format 120363xxx@g.us")
+
+
+class GroupUpdate(BaseModel):
+    name: str | None = Field(None, description="Label grup")
+    chat_id: str | None = Field(None, description="ID grup WhatsApp, format 120363xxx@g.us")
+    is_active: bool | None = Field(None, description="Status aktif (false = nonaktifkan)")
+
+
+GROUP_CHAT_ID_RE = re.compile(r"^\d+@g\.us$")
 
 
 class WahaId(BaseModel):
@@ -830,6 +912,9 @@ async def create_case(inp: CaseIn, request: Request,
     jenis_key = _resolve_jenis_case_name(inp.jenis_case)
     jenis_case_id = _resolve_jenis_case(inp.jenis_case)
     sumber_ticket_id = _resolve_sumber_ticket(inp.sumber_ticket)
+    group = _get_group(inp.group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found or inactive. Lihat GET /api/groups")
 
     f = inp.fields
     case_code = (f.get("ticket_remedy") or f.get("case_id") or "").strip().upper() or None
@@ -859,7 +944,8 @@ async def create_case(inp: CaseIn, request: Request,
     )
     text = f"{header}\n\n{body_text}" if header else body_text
 
-    wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None)
+    wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None,
+                             chat_id=group["chat_id"])
 
     # Build mentions JSON for storage
     mentions_json = json.dumps([{"number": m.number, "name": m.name} for m in inp.mentions]) if inp.mentions else "[]"
@@ -868,8 +954,8 @@ async def create_case(inp: CaseIn, request: Request,
         cur.execute(
             """INSERT INTO cases (case_code, case_type, title, fields, message_text, wa_message_id,
                                   area_id, regional_id, sumber_ticket_id, jenis_case_id, asal_grapari,
-                                  mentions)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                  mentions, group_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (case_code) DO UPDATE
                  SET wa_message_id = EXCLUDED.wa_message_id,
                      message_text  = EXCLUDED.message_text,
@@ -879,13 +965,14 @@ async def create_case(inp: CaseIn, request: Request,
                      jenis_case_id = EXCLUDED.jenis_case_id,
                      asal_grapari  = EXCLUDED.asal_grapari,
                      mentions      = EXCLUDED.mentions,
+                     group_id      = EXCLUDED.group_id,
                      status        = 'open',
                      updated_at    = now()
                RETURNING id, case_code""",
             (case_code, jenis_key, f.get("detail_case", "")[:120],
              json.dumps(f), text, wa_mid,
              inp.area_id, inp.regional_id, sumber_ticket_id,
-             jenis_case_id, inp.asal_grapari, mentions_json),
+             jenis_case_id, inp.asal_grapari, mentions_json, group["id"]),
         )
         row = cur.fetchone()
         cur.execute(
@@ -894,7 +981,8 @@ async def create_case(inp: CaseIn, request: Request,
             (wa_mid, row["id"], text),
         )
         conn.commit()
-    return {"id": row["id"], "case_code": row["case_code"], "wa_message_id": wa_mid, "text": text}
+    return {"id": row["id"], "case_code": row["case_code"], "wa_message_id": wa_mid,
+            "group_id": group["id"], "group_name": group["name"], "text": text}
 
 
 @app.get("/api/cases", tags=["Cases"],
@@ -907,6 +995,7 @@ def list_cases(
     area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
     regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
     sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
+    group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
     q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
     include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
     _auth: str = Depends(verify_api_key),
@@ -915,9 +1004,11 @@ def list_cases(
     sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
                     c.created_at, c.updated_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
+                    c.group_id, g.name AS group_name,
                     a.name AS area_name, r.name AS regional_name,
                     st.name AS sumber_ticket_name, jc.name AS jenis_case_name
              FROM cases c
+             LEFT JOIN wa_groups g ON c.group_id = g.id
              LEFT JOIN areas a ON c.area_id = a.id
              LEFT JOIN regionals r ON c.regional_id = r.id
              LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
@@ -940,6 +1031,9 @@ def list_cases(
     if sumber_ticket:
         sql += " AND st.name = %s"
         args.append(sumber_ticket)
+    if group_id:
+        sql += " AND c.group_id = %s"
+        args.append(group_id)
     if q:
         sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
         args += [f"%{q}%", f"%{q}%"]
@@ -957,8 +1051,10 @@ def case_detail(case_id: int, request: Request,
                 _rate: None = Depends(check_rate_limit)):
     with db() as conn, conn.cursor() as cur:
         cur.execute("""SELECT c.*, a.name AS area_name, r.name AS regional_name,
-                              st.name AS sumber_ticket_name, jc.name AS jenis_case_name
+                              st.name AS sumber_ticket_name, jc.name AS jenis_case_name,
+                              g.name AS group_name
                        FROM cases c
+                       LEFT JOIN wa_groups g ON c.group_id = g.id
                        LEFT JOIN areas a ON c.area_id = a.id
                        LEFT JOIN regionals r ON c.regional_id = r.id
                        LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
@@ -1104,6 +1200,9 @@ async def send_reminder(
             raise HTTPException(status_code=404, detail="Case not found")
         if case["status"] == "done":
             raise HTTPException(status_code=400, detail="Case sudah done, tidak perlu reminder")
+    group = _get_group(case["group_id"]) if case.get("group_id") else None
+    if not group:
+        raise HTTPException(status_code=400, detail="Case tidak punya grup aktif")
 
     # Extract solver mentions from stored JSONB
     mentions_data = case.get("mentions") or []
@@ -1114,11 +1213,12 @@ async def send_reminder(
     # Build reminder message
     message = render_reminder_text(inp.message)
 
-    # Send reply to original case message
+    # Send reply to original case message (di chat grup yang sama)
     wa_mid = await waha_send(
         message,
         mentions=mention_numbers or None,
         reply_to=case["wa_message_id"],
+        chat_id=group["chat_id"],
     )
 
     # Update DB
@@ -1179,10 +1279,15 @@ async def run_auto_reminders(
 
         message = render_reminder_text(None)
         try:
+            group = _get_group(case["group_id"]) if case.get("group_id") else None
+            if not group:
+                log.warning("Auto-reminder skipped case %d: no active group", case["id"])
+                continue
             wa_mid = await waha_send(
                 message,
                 mentions=mention_numbers or None,
                 reply_to=case["wa_message_id"],
+                chat_id=group["chat_id"],
             )
             with db() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -1225,16 +1330,19 @@ def list_pending_reminders(
     regional_id: int | None = Query(None, description="Filter Regional ID"),
     sumber_ticket: str | None = Query(None, description="Filter sumber ticket"),
     jenis_case: str | None = Query(None, description="Filter jenis case"),
+    group_id: int | None = Query(None, description="Filter grup WA"),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
     sql = """SELECT c.id, c.case_code, c.case_type, c.status,
                     c.created_at, c.updated_at, c.reminder_count, c.last_reminder_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id,
+                    c.group_id, g.name AS group_name,
                     a.name AS area_name, r.name AS regional_name,
                     st.name AS sumber_ticket_name, jc.name AS jenis_case_name,
                     EXTRACT(EPOCH FROM (now() - c.updated_at)) / 3600 AS idle_hours
              FROM cases c
+             LEFT JOIN wa_groups g ON c.group_id = g.id
              LEFT JOIN areas a ON c.area_id = a.id
              LEFT JOIN regionals r ON c.regional_id = r.id
              LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
@@ -1256,6 +1364,9 @@ def list_pending_reminders(
     if jenis_case:
         sql += " AND jc.name = %s"
         args.append(jenis_case)
+    if group_id:
+        sql += " AND c.group_id = %s"
+        args.append(group_id)
     sql += " ORDER BY c.updated_at ASC LIMIT %s"
     args.append(limit)
     with db() as conn, conn.cursor() as cur:
@@ -1439,67 +1550,224 @@ def delete_solver_contact(
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- Groups CRUD
+
+@app.get("/api/groups", tags=["Groups"],
+         summary="Daftar semua grup WhatsApp",
+         description="Return list grup WA. Query: is_active=true untuk switcher frontend.")
+def list_groups(
+    request: Request,
+    is_active: bool | None = Query(None, description="Filter status aktif. Kosongkan untuk semua."),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql = "SELECT id, name, chat_id, is_active, created_at, updated_at FROM wa_groups WHERE true"
+    args: list = []
+    if is_active is not None:
+        sql += " AND is_active = %s"
+        args.append(is_active)
+    sql += " ORDER BY name"
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        return cur.fetchall()
+
+
+@app.post("/api/groups", status_code=201, tags=["Groups"],
+          summary="Tambah grup WhatsApp baru",
+          description="Tambah grup WA untuk switcher case. Nama dan chat_id harus unik.")
+def create_group(
+    inp: GroupIn,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    name = inp.name.strip()
+    chat_id = inp.chat_id.strip()
+    if not GROUP_CHAT_ID_RE.match(chat_id):
+        raise HTTPException(status_code=422, detail="chat_id harus format 120363xxx@g.us")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM wa_groups WHERE chat_id = %s", (chat_id,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"chat_id {chat_id} sudah terdaftar")
+        cur.execute(
+            """INSERT INTO wa_groups (name, chat_id)
+               VALUES (%s, %s)
+               RETURNING id, name, chat_id, is_active, created_at, updated_at""",
+            (name, chat_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    return row
+
+
+@app.get("/api/groups/{group_id}", tags=["Groups"],
+         summary="Detail grup WhatsApp",
+         description="Return detail satu grup WA berdasarkan ID.")
+def get_group(
+    group_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE id = %s", (group_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Group tidak ditemukan")
+    return row
+
+
+@app.put("/api/groups/{group_id}", tags=["Groups"],
+         summary="Update grup WhatsApp",
+         description="Update field grup. Kirim hanya field yang ingin diubah.")
+def update_group(
+    group_id: int,
+    inp: GroupUpdate,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM wa_groups WHERE id = %s", (group_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Group tidak ditemukan")
+        updates, args = [], []
+        if inp.name is not None:
+            name = inp.name.strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="name tidak boleh kosong")
+            updates.append("name = %s")
+            args.append(name)
+        if inp.chat_id is not None:
+            chat_id = inp.chat_id.strip()
+            if not GROUP_CHAT_ID_RE.match(chat_id):
+                raise HTTPException(status_code=422, detail="chat_id harus format 120363xxx@g.us")
+            cur.execute("SELECT id FROM wa_groups WHERE chat_id = %s AND id != %s", (chat_id, group_id))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"chat_id {chat_id} sudah terdaftar")
+            updates.append("chat_id = %s")
+            args.append(chat_id)
+        if inp.is_active is not None:
+            updates.append("is_active = %s")
+            args.append(inp.is_active)
+        if not updates:
+            raise HTTPException(status_code=422, detail="Tidak ada field yang diubah")
+        updates.append("updated_at = now()")
+        args.append(group_id)
+        cur.execute(f"UPDATE wa_groups SET {', '.join(updates)} WHERE id = %s RETURNING *", args)
+        row = cur.fetchone()
+        conn.commit()
+    return row
+
+
+@app.delete("/api/groups/{group_id}", tags=["Groups"],
+            summary="Nonaktifkan grup WhatsApp (soft delete)",
+            description="Set is_active = false. Data tetap ada di DB karena case lama masih menunjuk grup ini.")
+def delete_group(
+    group_id: int,
+    request: Request,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM wa_groups WHERE id = %s AND is_active = true", (group_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Group tidak ditemukan atau sudah dinonaktifkan")
+        cur.execute("UPDATE wa_groups SET is_active = false, updated_at = now() WHERE id = %s", (group_id,))
+        conn.commit()
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- Crawl & System
 
 @app.post("/api/crawl", tags=["System"],
           summary="Backfill histori grup WA",
-          description="Dua pass: simpan semua pesan dulu (rantai lengkap), baru proses dengan waterfall matching.")
+          description="Dua pass: simpan semua pesan dulu (rantai lengkap), baru proses dengan waterfall matching. "
+                      "Tanpa group_id, crawl semua grup aktif.")
 async def crawl_group(
-    limit: int = Query(200, description="Jumlah pesan histori yang diambil"),
+    limit: int = Query(200, description="Jumlah pesan histori yang diambil per grup"),
+    group_id: int | None = Query(None, description="ID grup WA yang di-crawl. Kosongkan untuk semua grup aktif."),
     request: Request = None,
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
     """Dua pass: simpan semua pesan dulu (rantai lengkap), baru proses.
-    
+
     Pass 1: Store all messages (for complete chain traversal).
     Pass 2: Process each message with waterfall matching.
     Per-message errors are caught to avoid failing the entire crawl.
+
+    Multi-grup: kalau group_id dikosongkan, crawl setiap grup aktif berurutan.
     """
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.get(
-            f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{WA_GROUP_ID}/messages",
-            params={"limit": limit, "download": "true"},
-            headers=WAHA_HEADERS,
-        )
-        r.raise_for_status()
-        msgs = r.json()
+    target_groups = []
+    if group_id is not None:
+        group = _get_group(group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found or inactive. Lihat GET /api/groups")
+        target_groups = [group]
+    else:
+        target_groups = _get_active_groups()
+        if not target_groups:
+            raise HTTPException(status_code=400, detail="Tidak ada grup aktif untuk di-crawl")
 
-    # Pass 1: Store all messages for complete chain
-    stored = 0
-    store_errors = 0
-    for m in msgs:
-        try:
-            media = m.get("media") or {}
-            store_message(norm_id(m.get("id")), extract_quoted_id(m),
-                          m.get("participant") or m.get("author") or m.get("from"),
-                          (m.get("body") or "").strip(),
-                          from_me=m.get("fromMe", False),
-                          media_url=await _download_and_rewrite_media(media.get("url")),
-                          media_type=media.get("mimetype"))
-            stored += 1
-        except Exception as e:
-            store_errors += 1
-            log.warning("Crawl store failed for message: %s", e)
+    totals = {"fetched": 0, "stored": 0, "updates_applied": 0,
+              "store_errors": 0, "process_errors": 0}
+    per_group = []
 
-    # Pass 2: Process each message with waterfall
-    applied = 0
-    process_errors = 0
-    for m in msgs:
-        try:
-            if await handle_message(m, crawl=True):
-                applied += 1
-        except Exception as e:
-            process_errors += 1
-            log.warning("Crawl process failed for message: %s", e)
+    for group in target_groups:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.get(
+                f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{group['chat_id']}/messages",
+                params={"limit": limit, "download": "true"},
+                headers=WAHA_HEADERS,
+            )
+            r.raise_for_status()
+            msgs = r.json()
 
-    return {
-        "fetched": len(msgs),
-        "stored": stored,
-        "updates_applied": applied,
-        "store_errors": store_errors,
-        "process_errors": process_errors,
-    }
+        # Pass 1: Store all messages for complete chain
+        stored = 0
+        store_errors = 0
+        for m in msgs:
+            try:
+                media = m.get("media") or {}
+                store_message(norm_id(m.get("id")), extract_quoted_id(m),
+                              m.get("participant") or m.get("author") or m.get("from"),
+                              (m.get("body") or "").strip(),
+                              from_me=m.get("fromMe", False),
+                              media_url=await _download_and_rewrite_media(media.get("url")),
+                              media_type=media.get("mimetype"))
+                stored += 1
+            except Exception as e:
+                store_errors += 1
+                log.warning("Crawl store failed for message: %s", e)
+
+        # Pass 2: Process each message with waterfall
+        applied = 0
+        process_errors = 0
+        for m in msgs:
+            try:
+                if await handle_message(m, crawl=True):
+                    applied += 1
+            except Exception as e:
+                process_errors += 1
+                log.warning("Crawl process failed for message: %s", e)
+
+        totals["fetched"] += len(msgs)
+        totals["stored"] += stored
+        totals["updates_applied"] += applied
+        totals["store_errors"] += store_errors
+        totals["process_errors"] += process_errors
+        per_group.append({
+            "group_id": group["id"],
+            "group_name": group["name"],
+            "fetched": len(msgs),
+            "stored": stored,
+            "updates_applied": applied,
+            "store_errors": store_errors,
+            "process_errors": process_errors,
+        })
+
+    return {**totals, "groups": per_group}
 
 
 # ---------------------------------------------------------------- Media Serving
