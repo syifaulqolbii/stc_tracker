@@ -915,7 +915,9 @@ def login_with_access_code(inp: AccessCodeIn):
 
 @app.post("/api/cases", status_code=201, tags=["Cases"],
           summary="Buat & kirim case ke grup WA",
-          description="Buat case baru dengan field Area, Regional, Sumber Ticket, Jenis Case. Field lama juga opsional.")
+          description="Buat case baru dengan field Area, Regional, Sumber Ticket, Jenis Case. Field lama juga opsional. "
+                      "`group_id` (dari GET /api/groups) OPSIONAL — dikosongkan berarti kirim ke grup default "
+                      "(wa_groups.is_default, biasanya grup test development).")
 async def create_case(inp: CaseIn, request: Request,
                       _auth: str = Depends(verify_api_key),
                       _rate: None = Depends(check_rate_limit)):
@@ -1340,7 +1342,8 @@ async def run_auto_reminders(
 
 @app.get("/api/reminders/pending", tags=["Reminders"],
          summary="Daftar case yang perlu reminder",
-         description="Return cases open/in_progress yang sudah X jam tanpa update.")
+         description="Return cases open/in_progress yang sudah X jam tanpa update. "
+                     "Bisa difilter per grup (group_id), area, regional, sumber ticket, jenis case.")
 def list_pending_reminders(
     request: Request,
     hours: int = Query(2, description="Jam idle minimum"),
