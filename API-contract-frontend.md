@@ -1,7 +1,7 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.9 · **Tanggal:** 4 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
-**Referensi:** PRD v1.3, schema-v1-2.sql, schema-multi-group.sql
+**Versi:** 1.10 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Referensi:** PRD v1.3, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
 
@@ -113,7 +113,7 @@ Content-Type: application/json
 
 ### 3.2 `POST /api/cases` — Buat & kirim case ke grup WA
 
-> **Catatan (v1.9 — multi-grup):** `group_id` kini **wajib** (int) — ID grup WA tujuan dari `GET /api/groups`. Field ini dipakai **switcher grup** di frontend: case dikirim (dan di-track) di grup tersebut. Tanpa `group_id` → `422`.
+> **Catatan (v1.10 — grup default):** `group_id` kini **opsional** (int) — ID grup WA tujuan dari `GET /api/groups`, dipakai **switcher grup** di frontend. Kalau user **tidak memilih** grup (field dikosongkan / tidak dikirim), case otomatis dikirim ke **grup default** (`wa_groups.is_default = true` — biasanya grup test development; **tidak muncul** di list switcher, lihat §6.1). Case tetap ter-track penuh di grup default itu. Kalau belum ada grup default → `400`.
 
 **Headers:**
 ```
@@ -200,7 +200,7 @@ Content-Type: application/json
 ```
 
 Aturan:
-- `group_id` — **wajib**, int. ID grup WA tujuan (dari `GET /api/groups`). Grup tidak valid atau `is_active=false` → `404`.
+- `group_id` — **opsional**, int. ID grup WA tujuan (dari `GET /api/groups`). **Dikosongkan → grup default** (`is_default`, biasanya grup test development). Grup eksplisit tidak valid / `is_active=false` → `404`; tidak ada grup default terkonfigurasi → `400`.
 - Field **required** per jenis case: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). Field lain **opsional**.
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
@@ -264,7 +264,7 @@ Halo @6281113021236, mohon bantuannya ya 🙏
 ```
 `text` adalah pesan final persis yang terkirim ke grup — tampilkan di toast/modal sukses sebagai bukti.
 
-**Error:** `401` API key tidak valid · `404` grup tidak ditemukan / tidak aktif · `422` field tidak valid (termasuk `group_id` hilang) · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
+**Error:** `401` API key tidak valid · `404` `group_id` tidak ditemukan / tidak aktif · `400` `group_id` dikosongkan tapi belum ada grup default · `422` field tidak valid · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
 
 ---
 
@@ -684,9 +684,11 @@ Data tidak dihapus, hanya `is_active` di-set `false`.
 
 ## 6. WhatsApp Groups (Multi-Grup) — CRUD
 
-Tabel `wa_groups` = daftar grup WA tujuan case (label + `chat_id` @g.us). Dipakai **switcher grup** di form create case dan filter dashboard. Backend me-seed **satu grup default ("Grup A")** dari env `WA_GROUP_ID` saat tabel masih kosong — tambah grup lain lewat endpoint di bawah ini.
+Tabel `wa_groups` = daftar grup WA tujuan case (label + `chat_id` @g.us). Dipakai **switcher grup** di form create case dan filter dashboard. Backend me-seed **satu grup awal ("Grup A")** dari env `WA_GROUP_ID` saat tabel masih kosong — tambah grup lain lewat endpoint di bawah ini.
 
-Bot (session WAHA) harus **di-add ke semua grup aktif** agar webhook menerima pesan dari grup tersebut; pesan dari grup yang tidak terdaftar di-abaikan.
+Selain itu ada **grup default** (`is_default = true`, maks 1 baris) sebagai fallback ketika user tidak memilih grup di switcher — biasanya **grup test development**. Grup default **tidak muncul** di `GET /api/groups` (kecuali `?include_default=true`) supaya tidak terlihat user, tapi **tetap ter-track penuh** oleh webhook/crawl/reminder karena barisnya terdaftar aktif.
+
+Bot (session WAHA) harus **di-add ke semua grup aktif** (termasuk grup default) agar webhook menerima pesan dari grup tersebut; pesan dari grup yang tidak terdaftar di-abaikan.
 
 ### 6.1 `GET /api/groups` — Daftar grup WA (untuk switcher)
 
@@ -696,12 +698,13 @@ Bot (session WAHA) harus **di-add ke semua grup aktif** agar webhook menerima pe
 | Param | Tipe | Keterangan |
 |---|---|---|
 | `is_active` | bool | Filter status aktif. **Gunakan `is_active=true` untuk populasi dropdown switcher.** |
+| `include_default` | bool | Default `false` → **grup default disaring keluar** (switcher bersih). `true` = sertakan (untuk halaman admin). |
 
 **Response `200`:**
 ```json
 [
-  { "id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": true, "created_at": "...", "updated_at": "..." },
-  { "id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": true, "created_at": "...", "updated_at": "..." }
+  { "id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": true, "is_default": false, "created_at": "...", "updated_at": "..." },
+  { "id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": true, "is_default": false, "created_at": "...", "updated_at": "..." }
 ]
 ```
 
@@ -717,6 +720,7 @@ Bot (session WAHA) harus **di-add ke semua grup aktif** agar webhook menerima pe
 ```
 - `name` wajib, string (label unik).
 - `chat_id` wajib, format `digits@g.us` (contoh: `120363002@g.us`).
+- `is_default` opsional, bool (default `false`). `true` → jadikan grup fallback + **menggeser** default lama.
 
 **Response `201`:** Object grup lengkap.
 
@@ -730,7 +734,7 @@ Bot (session WAHA) harus **di-add ke semua grup aktif** agar webhook menerima pe
 
 ---
 
-### 6.4 `PUT /api/groups/{id}` — Update grup (label / chat_id / aktif)
+### 6.4 `PUT /api/groups/{id}` — Update grup (label / chat_id / aktif / default)
 
 **Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
 
@@ -738,6 +742,11 @@ Bot (session WAHA) harus **di-add ke semua grup aktif** agar webhook menerima pe
 ```json
 { "name": "Grup B - Regional Jabar", "is_active": false }
 ```
+```json
+{ "is_default": true }
+```
+- `is_default: true` → grup ini jadi fallback; default lama otomatis dilepas (maks 1 di level DB, partial unique index).
+- `is_default: false` → lepaskan status default.
 
 **Error:** `404` tidak ditemukan · `409` chat_id sudah dipakai grup lain · `422` field tidak valid / tidak ada field yang diubah.
 
@@ -1397,6 +1406,13 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.10 (7 September 2026)
+- **Grup default (fallback):** kolom `wa_groups.is_default` (maks 1 baris, partial unique index di `schema-migration-group-default.sql`).
+- `POST /api/cases`: `group_id` kini **opsional** — tidak dipilih → dikirim ke grup default (biasanya grup test development). Tanpa default terkonfigurasi → `400` (sebelumnya `422` karena wajib).
+- `GET /api/groups`: **menyaring keluar** grup default secara otomatis; pakai `?include_default=true` untuk admin. Response menambah field `is_default`.
+- `POST/PUT /api/groups`: dukung `is_default`; set `true` otomatis melepas default lama.
+- Frontend: switcher tetap opsional — tidak perlu pre-select, dan grup test tidak terlihat oleh user.
 
 ### v1.9 (4 September 2026)
 - **Multi-grup WA (switcher Grup A/B):** tabel `wa_groups` + CRUD admin (`GET/POST/PUT/DELETE /api/groups`).

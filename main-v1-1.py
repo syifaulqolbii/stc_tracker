@@ -1,7 +1,9 @@
-"""Moban FU Case Tracker v1.7 — multi-group, reply-chain traversal.
+"""Moban FU Case Tracker v1.8 — multi-group + grup default fallback, reply-chain traversal.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
+Perubahan v1.8: group_id opsional — tanpa pilihan dikirim ke grup default
+(is_default, maks 1 baris, tersembunyi dari switcher GET /api/groups).
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -149,13 +151,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Moban FU Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.7. "
+        "Backend API untuk Moban FU Case Tracker v1.8. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
-        "multi-grup WA (switcher tujuan case), "
+        "multi-grup WA (switcher tujuan case + grup default fallback), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.7.0",
+    version="1.8.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -566,6 +568,13 @@ def _get_active_groups() -> list[dict]:
         return cur.fetchall()
 
 
+def _get_default_group() -> dict | None:
+    """Grup fallback untuk case tanpa group_id (kolom is_default, maks 1 baris)."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE is_default = true AND is_active = true LIMIT 1")
+        return cur.fetchone()
+
+
 def _seed_default_group():
     """Bootstrap: kalau tabel wa_groups kosong dan env WA_GROUP_ID terisi,
     seed satu baris supaya instalasi lama tidak patah. Case lama (group_id NULL)
@@ -805,7 +814,7 @@ class Mention(BaseModel):
     name: str | None = Field(None, description="Nama kontak (opsional, hanya untuk tampilan)")
 
 class CaseIn(BaseModel):
-    group_id: int = Field(..., description="ID grup WA tujuan. Lihat GET /api/groups (wajib)")
+    group_id: int | None = Field(None, description="ID grup WA tujuan. Lihat GET /api/groups. Kosongkan → dikirim ke grup default (is_default)")
     area_id: int | None = Field(None, description="ID Area. Lihat GET /api/areas")
     regional_id: int | None = Field(None, description="ID Regional (tergantung Area). Lihat GET /api/areas/{area_id}/regionals")
     sumber_ticket: str | None = Field(None, description="Sumber Ticket: STC, Grapari, atau Web IT. Lihat GET /api/sumber-tickets")
@@ -843,12 +852,14 @@ class SolverContactUpdate(BaseModel):
 class GroupIn(BaseModel):
     name: str = Field(..., description="Label grup (contoh: 'Grup A')")
     chat_id: str = Field(..., description="ID grup WhatsApp, format 120363xxx@g.us")
+    is_default: bool | None = Field(None, description="Jadikan grup fallback untuk case tanpa group_id. Menggeser default lama. Default: false.")
 
 
 class GroupUpdate(BaseModel):
     name: str | None = Field(None, description="Label grup")
     chat_id: str | None = Field(None, description="ID grup WhatsApp, format 120363xxx@g.us")
     is_active: bool | None = Field(None, description="Status aktif (false = nonaktifkan)")
+    is_default: bool | None = Field(None, description="Set true = jadikan grup default (menggeser default lama); false = lepaskan status default")
 
 
 GROUP_CHAT_ID_RE = re.compile(r"^\d+@g\.us$")
@@ -912,9 +923,17 @@ async def create_case(inp: CaseIn, request: Request,
     jenis_key = _resolve_jenis_case_name(inp.jenis_case)
     jenis_case_id = _resolve_jenis_case(inp.jenis_case)
     sumber_ticket_id = _resolve_sumber_ticket(inp.sumber_ticket)
-    group = _get_group(inp.group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found or inactive. Lihat GET /api/groups")
+    if inp.group_id is not None:
+        group = _get_group(inp.group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found or inactive. Lihat GET /api/groups")
+    else:
+        group = _get_default_group()
+        if not group:
+            raise HTTPException(
+                status_code=400,
+                detail='Belum ada grup default — kirim group_id atau set via PUT /api/groups/{id} {"is_default": true}',
+            )
 
     f = inp.fields
     case_code = (f.get("ticket_remedy") or f.get("case_id") or "").strip().upper() or None
@@ -1553,19 +1572,23 @@ def delete_solver_contact(
 # ---------------------------------------------------------------- Groups CRUD
 
 @app.get("/api/groups", tags=["Groups"],
-         summary="Daftar semua grup WhatsApp",
-         description="Return list grup WA. Query: is_active=true untuk switcher frontend.")
+         summary="Daftar grup WhatsApp (switcher)",
+         description="Return list grup WA. Query: is_active=true untuk switcher frontend. "
+                     "Grup default (is_default) DISEMBUNYIKAN kecuali include_default=true.")
 def list_groups(
     request: Request,
     is_active: bool | None = Query(None, description="Filter status aktif. Kosongkan untuk semua."),
+    include_default: bool = Query(False, description="true = sertakan grup default (untuk admin). Default: hanya grup yang bisa dipilih user."),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
-    sql = "SELECT id, name, chat_id, is_active, created_at, updated_at FROM wa_groups WHERE true"
+    sql = "SELECT id, name, chat_id, is_active, is_default, created_at, updated_at FROM wa_groups WHERE true"
     args: list = []
     if is_active is not None:
         sql += " AND is_active = %s"
         args.append(is_active)
+    if not include_default:
+        sql += " AND is_default = false"
     sql += " ORDER BY name"
     with db() as conn, conn.cursor() as cur:
         cur.execute(sql, args)
@@ -1574,7 +1597,8 @@ def list_groups(
 
 @app.post("/api/groups", status_code=201, tags=["Groups"],
           summary="Tambah grup WhatsApp baru",
-          description="Tambah grup WA untuk switcher case. Nama dan chat_id harus unik.")
+          description="Tambah grup WA untuk switcher case. Nama dan chat_id harus unik. "
+                      "is_default=true menggeser grup default lama.")
 def create_group(
     inp: GroupIn,
     request: Request,
@@ -1585,15 +1609,18 @@ def create_group(
     chat_id = inp.chat_id.strip()
     if not GROUP_CHAT_ID_RE.match(chat_id):
         raise HTTPException(status_code=422, detail="chat_id harus format 120363xxx@g.us")
+    is_default = bool(inp.is_default)
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM wa_groups WHERE chat_id = %s", (chat_id,))
         if cur.fetchone():
             raise HTTPException(status_code=409, detail=f"chat_id {chat_id} sudah terdaftar")
+        if is_default:
+            cur.execute("UPDATE wa_groups SET is_default = false, updated_at = now() WHERE is_default = true")
         cur.execute(
-            """INSERT INTO wa_groups (name, chat_id)
-               VALUES (%s, %s)
-               RETURNING id, name, chat_id, is_active, created_at, updated_at""",
-            (name, chat_id),
+            """INSERT INTO wa_groups (name, chat_id, is_default)
+               VALUES (%s, %s, %s)
+               RETURNING id, name, chat_id, is_active, is_default, created_at, updated_at""",
+            (name, chat_id, is_default),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1619,7 +1646,8 @@ def get_group(
 
 @app.put("/api/groups/{group_id}", tags=["Groups"],
          summary="Update grup WhatsApp",
-         description="Update field grup. Kirim hanya field yang ingin diubah.")
+         description="Update field grup. Kirim hanya field yang ingin diubah. "
+                     "is_default=true menggeser grup default lama.")
 def update_group(
     group_id: int,
     inp: GroupUpdate,
@@ -1650,6 +1678,13 @@ def update_group(
         if inp.is_active is not None:
             updates.append("is_active = %s")
             args.append(inp.is_active)
+        if inp.is_default is not None:
+            if inp.is_default:
+                # geser status default dari grup lain (maks 1 baris default)
+                cur.execute("UPDATE wa_groups SET is_default = false, updated_at = now() "
+                            "WHERE is_default = true AND id != %s", (group_id,))
+            updates.append("is_default = %s")
+            args.append(inp.is_default)
         if not updates:
             raise HTTPException(status_code=422, detail="Tidak ada field yang diubah")
         updates.append("updated_at = now()")

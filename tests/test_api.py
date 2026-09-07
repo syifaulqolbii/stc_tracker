@@ -261,18 +261,41 @@ class TestCreateCase:
         data = response.json()
         assert "#Non Order" in data["text"]
 
-    def test_create_case_requires_group_id(self, client):
-        """group_id is required (wajib pilih grup) — missing → 422."""
+    def test_create_case_uses_default_group(self, client):
+        """Tanpa group_id → case dikirim ke grup default (is_default)."""
         tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 1},  # jenis_case lookup
+            {"id": 5, "name": "Grup Test Dev", "chat_id": "120363999@g.us",
+             "is_default": True},  # _get_default_group()
+            {"id": 50, "case_code": None},  # INSERT RETURNING
+            None,  # INSERT wa_messages
+        ]
         response = tc.post("/api/cases", json={
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"detail_case": "tanpa grup"},
         })
-        assert response.status_code == 422
-        assert "group_id" in str(response.json()["detail"])
+        assert response.status_code == 201
+        data = response.json()
+        assert data["group_id"] == 5
+        assert data["group_name"] == "Grup Test Dev"
+
+    def test_create_case_no_group_and_no_default_returns_400(self, client):
+        """Tanpa group_id DAN belum ada grup default → 400 dengan pesan jelas."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 1},  # jenis_case lookup
+            None,       # _get_default_group() → tidak ada default
+        ]
+        response = tc.post("/api/cases", json={
+            "jenis_case": "Non Order",
+            "fields": {"detail_case": "tanpa grup"},
+        })
+        assert response.status_code == 400
+        assert "default" in response.json()["detail"]
 
     def test_create_case_invalid_group(self, client):
-        """Invalid/inactive group_id → 404."""
+        """Invalid/inactive group_id → 404 (tidak fallback ke default)."""
         tc, mock_cursor = client
         # sequence: jenis lookup ok, then _get_group returns None
         mock_cursor.fetchone.side_effect = [
@@ -699,6 +722,104 @@ class TestGroups:
             tc = TestClient(main_module.app)
             response = tc.delete("/api/groups/999")
             assert response.status_code == 404
+
+    # --- grup default (fallback, tersembunyi dari switcher) ---
+
+    def test_list_groups_hides_default_by_default(self, mock_waha):
+        """GET /api/groups menyaring keluar grup default (switcher bersih)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "name": "Grup A", "chat_id": "120363001@g.us",
+             "is_active": True, "is_default": False},
+        ]
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups")
+            assert response.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "is_default = false" in sql
+
+    def test_list_groups_include_default_param(self, mock_waha):
+        """?include_default=true → filter default dilepas (untuk admin)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups?include_default=true")
+            assert response.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "is_default = false" not in sql
+
+    def test_create_group_with_is_default_clears_previous(self, mock_waha):
+        """POST /api/groups is_default=true melepas default lama sebelum insert."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,  # duplicate chat_id check
+            {"id": 3, "name": "Grup Test Dev", "chat_id": "120363003@g.us",
+             "is_active": True, "is_default": True},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/groups", json={
+                "name": "Grup Test Dev",
+                "chat_id": "120363003@g.us",
+                "is_default": True,
+            })
+            assert response.status_code == 201
+            assert response.json()["is_default"] is True
+            sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+            assert any("SET is_default = false" in s for s in sqls)
+
+    def test_create_group_without_is_default_keeps_false(self, mock_waha):
+        """Tanpa is_default → tidak ada query pelepasan default."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            None,
+            {**self.GROUP_ROW, "is_default": False},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.post("/api/groups", json={
+                "name": "Grup A",
+                "chat_id": "120363001@g.us",
+            })
+            assert response.status_code == 201
+            sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+            assert not any("SET is_default = false" in s for s in sqls)
+
+    def test_update_group_set_default(self, mock_waha):
+        """PUT /api/groups/{id} {"is_default": true} menggeser default lama."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 2},  # exists
+            {"id": 2, "name": "Grup B", "chat_id": "120363002@g.us",
+             "is_active": True, "is_default": True},  # RETURNING
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.put("/api/groups/2", json={"is_default": True})
+            assert response.status_code == 200
+            assert response.json()["is_default"] is True
+            sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+            assert any("SET is_default = false" in s and "id != %s" in s for s in sqls)
+
+
+class TestGetDefaultGroup:
+    """Helper _get_default_group: hanya grup is_default yang aktif."""
+
+    def test_sql_filters_is_default_and_active(self):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 5, "name": "Grup Test Dev", "chat_id": "120363003@g.us",
+             "is_default": True, "is_active": True},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            row = main_module._get_default_group()
+            assert row["name"] == "Grup Test Dev"
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "is_default = true" in sql
+            assert "is_active = true" in sql
+
+    def test_returns_none_when_no_default(self):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
+        with patch.object(main_module, "db", return_value=mock_conn):
+            assert main_module._get_default_group() is None
 
 
 class TestMediaHandling:

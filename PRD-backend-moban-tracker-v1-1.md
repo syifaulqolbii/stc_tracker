@@ -1,9 +1,10 @@
 # PRD — Backend Moban FU Case Tracker
 
-**Versi:** 1.3 (supersedes v1.1) · **Tanggal:** 4 September 2026 · **Owner:** Backend
+**Versi:** 1.4 (supersedes v1.1) · **Tanggal:** 7 September 2026 · **Owner:** Backend
 **Stack:** FastAPI (Python) · Supabase (PostgreSQL) · WAHA (WhatsApp HTTP API) · OpenRouter (LLM fallback)
 **Perubahan v1.1:** arsitektur multi-group dibatalkan — semua tim solusi (1–5) berada di **satu grup WA yang sama**. Mekanisme tracking diganti dari "hop lintas grup" menjadi **reply-chain traversal di dalam satu grup**.
-**Perubahan v1.3 (multi-grup dikembalikan):** switcher **Grup A / Grup B** — tabel `wa_groups` + admin CRUD, `group_id` **wajib** saat create case, tracking webhook/crawl/reminder/filter dashboard **per-grup**. Status "non-goal multi-grup" pada v1.1 dicabut.
+**Perubahan v1.3 (multi-grup dikembalikan):** switcher **Grup A / Grup B** — tabel `wa_groups` + admin CRUD, tracking webhook/crawl/reminder/filter dashboard **per-grup**. Status "non-goal multi-grup" pada v1.1 dicabut.
+**Perubahan v1.4 (grup default):** `group_id` di `POST /api/cases` jadi **opsional** — kalau user tidak memilih, case dikirim ke **grup default** (`wa_groups.is_default`, biasanya grup test development). Grup default disembunyikan dari switcher (`GET /api/groups`) dan tetap ter-track penuh. Tanpa grup default → `400`.
 
 ---
 
@@ -57,15 +58,19 @@ Form Web ──► Backend API ──► Supabase (PostgreSQL)
 ## 5. Data Model (Supabase / PostgreSQL)
 
 ```sql
--- Grup WhatsApp tujuan case (v1.3)
+-- Grup WhatsApp tujuan case (v1.3, kolom is_default v1.4)
 CREATE TABLE wa_groups (
     id            SERIAL PRIMARY KEY,
     name          VARCHAR(100) NOT NULL UNIQUE,   -- label "Grup A" / "Grup B"
     chat_id       VARCHAR(128) NOT NULL UNIQUE,   -- 120363xxx@g.us
     is_active     BOOLEAN NOT NULL DEFAULT true,
+    is_default    BOOLEAN NOT NULL DEFAULT false,  -- v1.4: grup test dev — fallback tanpa group_id
     created_at    TIMESTAMPTZ DEFAULT now(),
     updated_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- v1.4: maksimum satu grup default (dijaga di level DB)
+CREATE UNIQUE INDEX idx_wa_groups_default ON wa_groups(is_default) WHERE is_default = true;
 
 CREATE TABLE cases (
     id            SERIAL PRIMARY KEY,
@@ -111,7 +116,7 @@ CREATE TABLE progress_updates (
 ## 6. Logika Inti
 
 ### 6.1 Kirim case (US-1)
-`POST /api/cases` (dengan `group_id` wajib — grup tujuan dari switcher) → resolve `wa_groups.chat_id` → rakit teks via template → WAHA `sendText` (dengan `mentions`, `chatId` = grup tujuan) → simpan `cases` (`wa_message_id` = root, `group_id` tercatat) + baris `wa_messages` (`from_me=true`).
+`POST /api/cases` (`group_id` **opsional** — grup tujuan dari switcher; **kosong → grup default** `is_default`) → resolve `wa_groups.chat_id` → rakit teks via template → WAHA `sendText` (dengan `mentions`, `chatId` = grup tujuan) → simpan `cases` (`wa_message_id` = root, `group_id` tercatat) + baris `wa_messages` (`from_me=true`). Kalau `group_id` kosong dan belum ada grup default → `400`.
 
 ### 6.2 Pencocokan pesan masuk (waterfall)
 Setiap event `message` dari grup:
@@ -139,21 +144,22 @@ Setiap event `message` dari grup:
 - Chain traversal dibatasi 5 level untuk mencegah loop; kedalaman rantai real jarang >3.
 - **Isolasi per-grup (v1.3):** case hanya di-link dari pesan yang berasal dari grup yang sama dengannya (`case.group_id == grup asal pesan`). Reply-chain yang kebetulan menunjuk case grup lain tetap di-link, tapi diverifikasi dan ditolak → mencegah false-positive lintas grup.
 - Grup yang dinonaktifkan (`is_active=false`) tidak bisa dipilih saat create case; webhook-nya berhenti di-track.
+- **Grup default (v1.4):** `is_default` dibatasi maks 1 oleh partial unique index; tersembunyi dari `GET /api/groups` (muncul hanya dengan `?include_default=true`) tetapi tetap aktif di-track. Kalau grup default ikut dinonaktifkan, create case tanpa `group_id` gagal dengan `400` — tidak ada pengiriman diam-diam ke grup lain.
 - `case_code` unik global — case yang sama tidak bisa aktif di dua grup sekaligus; re-FU dengan grup berbeda memindahkan case ke grup baru.
 
 ## 7. API Specification
 
 | Method & Path | Deskripsi | Response |
 |---|---|---|
-| `POST /api/cases` | Buat & kirim case ke grup tujuan (`group_id` **wajib**) | `201 {id, case_code, group_id, group_name, wa_message_id, text}` |
+| `POST /api/cases` | Buat & kirim case (`group_id` **opsional** → default `is_default`) | `201 {id, case_code, group_id, group_name, wa_message_id, text}` |
 | `GET /api/cases` | List case (query: `status`, `case_type`, `group_id`, `q`) | `[{id, case_code, title, status, group_id, group_name, updated_at}]` |
 | `GET /api/cases/{id}` | Detail + timeline rantai + peserta | `{case, messages[] (pohon), updates[], participants[]}` |
 | `POST /api/cases/{id}/status` | Koreksi manual | update `source=manual` |
 | `DELETE /api/cases/{id}` | Soft delete case | `{ok, case_code}` |
-| `GET /api/groups` | Daftar grup WA (switcher) | `[{id, name, chat_id, is_active}]` |
-| `POST /api/groups` | Tambah grup WA | `201 {id, name, chat_id, is_active}` |
+| `GET /api/groups` | Daftar grup untuk switcher (grup default **disaring keluar**; `?include_default=true` untuk admin) | `[{id, name, chat_id, is_active, is_default}]` |
+| `POST /api/groups` | Tambah grup WA (`is_default` opsional, menggeser default lama) | `201 {id, name, chat_id, is_active, is_default}` |
 | `GET /api/groups/{id}` | Detail grup | row grup |
-| `PUT /api/groups/{id}` | Update grup (label/chat_id/is_active) | row grup |
+| `PUT /api/groups/{id}` | Update grup (label/chat_id/is_active/**is_default**) | row grup |
 | `DELETE /api/groups/{id}` | Nonaktifkan grup (soft delete) | `{ok}` |
 | `POST /api/crawl` | Backfill histori (query: `limit`, `group_id`; default semua grup) | `{fetched, stored, updates_applied, groups[]}` |
 | `POST /webhooks/waha` | Receiver event WAHA | `200 {ok}` (proses async) |
@@ -183,6 +189,8 @@ BACKEND_API_KEY=<auth endpoint /api>
 Supabase: pakai connection string pooler (port 6543); free tier 500 MB sangat cukup. Webhook WAHA: events `message`, `message.ack`, `session.status`.
 
 **Migrasi v1.3:** jalankan `schema-multi-group.sql` (tabel `wa_groups` + `cases.group_id`). Grup didaftarkan via `POST /api/groups` (atau seed otomatis dari `WA_GROUP_ID` saat startup jika tabel kosong); case lama (group_id NULL) di-backfill otomatis ke grup seed.
+
+**Migrasi v1.4:** jalankan `schema-migration-group-default.sql` (kolom `wa_groups.is_default` + partial unique index `idx_wa_groups_default`). Set grup test development sebagai fallback: `PUT /api/groups/{id} {"is_default": true}` — grup ini tidak muncul di switcher dan tetap ter-track.
 
 ## 9. Non-Fungsional
 
