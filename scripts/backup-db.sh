@@ -1,7 +1,12 @@
 #!/bin/bash
 # Backup database before clearing data
 # Usage: bash scripts/backup-db.sh
-# Output: backup_YYYYMMDD_HHMMSS.sql
+# Output: backup_YYYYMMDD_HHMMSS.sql (+ schema_YYYYMMDD_HHMMSS.sql) in ./backups
+# Keeps the last 14 days; runs unattended from cron.
+#
+# Restore (data-only dump needs the schema applied first):
+#   docker exec -i moban-db psql -U postgres -d moban < backups/schema_<ts>.sql
+#   docker exec -i moban-db psql -U postgres -d moban < backups/backup_<ts>.sql
 
 set -e
 
@@ -43,3 +48,9 @@ echo "Schema backup: $SCHEMA_FILE"
 echo ""
 echo "File size:"
 ls -lh "$BACKUP_FILE" "$SCHEMA_FILE"
+
+echo ""
+echo "=== Pruning dumps older than 14 days ==="
+find "$BACKUP_DIR" -maxdepth 1 -type f \
+    \( -name 'backup_*.sql' -o -name 'schema_*.sql' \) \
+    -mtime +14 -print -delete

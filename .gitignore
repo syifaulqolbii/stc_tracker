@@ -1,5 +1,6 @@
 # Environment
 .env
+.env.bak*
 .venv/
 venv/
 env/
@@ -35,3 +36,6 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Database dumps written by scripts/backup-db.sh — production data, never commit
+backups/
