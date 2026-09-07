@@ -1,7 +1,7 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.10 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
-**Referensi:** PRD v1.3, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
+**Versi:** 1.11 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Referensi:** PRD v1.5, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
 
@@ -760,6 +760,51 @@ Set `is_active = false`. Data tetap di DB karena case lama masih menunjuk grup i
 
 ---
 
+### 6.6 `GET /api/waha/groups` — Discovery grup dari WAHA (admin)
+
+**Headers:** `X-API-Key: <key>`
+
+Mengambil **daftar grup WhatsApp yang bot ikuti**, langsung dari WAHA — jadi admin tidak perlu membuka UI/CLI WAHA untuk menyalin `chat_id`. Hanya grup yang dikembalikan (chat personal & status dibuang oleh backend).
+
+**Query params:**
+| Param | Default | Keterangan |
+|---|---|---|
+| `limit` | 500 | Jumlah grup maksimal yang dikembalikan |
+| `search` | - | Substring case-insensitive pada **nama** grup |
+
+**Response `200`:**
+```json
+[
+  {
+    "chat_id": "120363002@g.us",
+    "name": "Grup Baru Belum Didaftarkan",
+    "registered": false,
+    "group_id": null,
+    "is_active": null,
+    "is_default": null
+  },
+  {
+    "chat_id": "120363001@g.us",
+    "name": "Escalation OPERA - CX100",
+    "registered": true,
+    "group_id": 2,
+    "is_active": true,
+    "is_default": false
+  }
+]
+```
+- `registered` — `true` bila `chat_id` sudah ada di `wa_groups`. **Yang belum terdaftar diurutkan paling atas** supaya mudah dicari.
+- `group_id` / `is_active` / `is_default` — isi baris lokal bila sudah terdaftar; `null` bila belum.
+- Pencocokan memakai `chat_id` (stabil), **bukan nama grup** — nama grup WhatsApp bisa diganti kapan saja.
+
+**Error:** `401` API key tidak valid · `502` WAHA error / tidak terjangkau.
+
+**Alur pakai:** `GET /api/waha/groups` → salin `chat_id` yang `registered: false` → `POST /api/groups {"name":"<label>","chat_id":"<...@g.us>"}` → grup langsung muncul di switcher (`GET /api/groups`). Untuk menandainya sebagai fallback, tambahkan `"is_default": true` atau `PUT /api/groups/{id}`.
+
+> Endpoint ini hanya **membaca** dari WAHA — tidak mendaftarkan apa pun otomatis. Butuh session WAHA aktif; panggilan pertama bisa beberapa detik karena WAHA memuat daftar chat.
+
+---
+
 ## 7. Reminders (Sundul)
 
 Fitur untuk mengingatkan solver agar follow up case yang belum ditangani. Bot akan reply ke pesan case asli di grup WA dengan mention solver.
@@ -1406,6 +1451,12 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.11 (7 September 2026)
+- **Endpoint baru `GET /api/waha/groups`** (admin): daftar semua grup yang bot ikuti, diambil langsung dari WAHA — tidak perlu salin `chat_id` manual dari UI/CLI WAHA.
+- Response berisi `chat_id`, `name`, `registered`, `group_id`, `is_active`, `is_default`; yang belum terdaftar diurutkan paling atas. Query: `limit` (default 500), `search` (substring nama).
+- Read-only: tidak mendaftarkan grup apa pun. `502` bila WAHA error/tidak terjangkau.
+- Backend versi 1.9.0. Tidak ada perubahan skema DB.
 
 ### v1.10 (7 September 2026)
 - **Grup default (fallback):** kolom `wa_groups.is_default` (maks 1 baris, partial unique index di `schema-migration-group-default.sql`).
