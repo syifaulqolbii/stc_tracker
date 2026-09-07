@@ -1,10 +1,11 @@
 # PRD — Backend Moban FU Case Tracker
 
-**Versi:** 1.4 (supersedes v1.1) · **Tanggal:** 7 September 2026 · **Owner:** Backend
+**Versi:** 1.5 (supersedes v1.1) · **Tanggal:** 7 September 2026 · **Owner:** Backend
 **Stack:** FastAPI (Python) · Supabase (PostgreSQL) · WAHA (WhatsApp HTTP API) · OpenRouter (LLM fallback)
 **Perubahan v1.1:** arsitektur multi-group dibatalkan — semua tim solusi (1–5) berada di **satu grup WA yang sama**. Mekanisme tracking diganti dari "hop lintas grup" menjadi **reply-chain traversal di dalam satu grup**.
 **Perubahan v1.3 (multi-grup dikembalikan):** switcher **Grup A / Grup B** — tabel `wa_groups` + admin CRUD, tracking webhook/crawl/reminder/filter dashboard **per-grup**. Status "non-goal multi-grup" pada v1.1 dicabut.
 **Perubahan v1.4 (grup default):** `group_id` di `POST /api/cases` jadi **opsional** — kalau user tidak memilih, case dikirim ke **grup default** (`wa_groups.is_default`, biasanya grup test development). Grup default disembunyikan dari switcher (`GET /api/groups`) dan tetap ter-track penuh. Tanpa grup default → `400`.
+**Perubahan v1.5 (discovery grup):** endpoint admin `GET /api/waha/groups` membaca daftar grup yang bot ikuti langsung dari WAHA (`GET /api/{session}/chats`, disaring `kind == "group"`) lengkap penanda `registered`/`group_id`, sehingga `chat_id` tidak perlu disalin manual dari UI/CLI WAHA. Read-only, tanpa perubahan skema DB.
 
 ---
 
@@ -54,6 +55,7 @@ Form Web ──► Backend API ──► Supabase (PostgreSQL)
 - Webhook `message.ack` — status terkirim/dibaca pesan keluar.
 - `GET /api/{session}/chats/{chatId}/messages?limit=` — crawl histori per grup.
 - Bot anggota **semua grup terdaftar** (`wa_groups` aktif). Pesan dari grup yang **tidak terdaftar** diabaikan.
+- `GET /api/{session}/chats` — daftar semua chat session (dipakai `GET /api/waha/groups` untuk discovery; disaring `kind == "group"`).
 
 ## 5. Data Model (Supabase / PostgreSQL)
 
@@ -161,6 +163,7 @@ Setiap event `message` dari grup:
 | `GET /api/groups/{id}` | Detail grup | row grup |
 | `PUT /api/groups/{id}` | Update grup (label/chat_id/is_active/**is_default**) | row grup |
 | `DELETE /api/groups/{id}` | Nonaktifkan grup (soft delete) | `{ok}` |
+| `GET /api/waha/groups` | Discovery: grup yang bot ikuti, langsung dari WAHA (query `limit`, `search`) | `[{chat_id, name, registered, group_id, is_active, is_default}]` |
 | `POST /api/crawl` | Backfill histori (query: `limit`, `group_id`; default semua grup) | `{fetched, stored, updates_applied, groups[]}` |
 | `POST /webhooks/waha` | Receiver event WAHA | `200 {ok}` (proses async) |
 | `GET /health` | Healthcheck db + WAHA | `{status, db, waha}` |

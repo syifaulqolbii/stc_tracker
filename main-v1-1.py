@@ -1,9 +1,11 @@
-"""Moban FU Case Tracker v1.8 — multi-group + grup default fallback, reply-chain traversal.
+"""Moban FU Case Tracker v1.9 — multi-group + grup default fallback, reply-chain traversal.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
 Perubahan v1.8: group_id opsional — tanpa pilihan dikirim ke grup default
 (is_default, maks 1 baris, tersembunyi dari switcher GET /api/groups).
+Perubahan v1.9: GET /api/waha/groups — daftar grup yang bot join langsung dari WAHA
+lengkap penanda sudah terdaftar / belum, untuk memudahkan ambil chat_id.
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -151,13 +153,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Moban FU Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.8. "
+        "Backend API untuk Moban FU Case Tracker v1.9. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
-        "multi-grup WA (switcher tujuan case + grup default fallback), "
+        "multi-grup WA (switcher tujuan case + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.8.0",
+    version="1.9.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -573,6 +575,14 @@ def _get_default_group() -> dict | None:
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM wa_groups WHERE is_default = true AND is_active = true LIMIT 1")
         return cur.fetchone()
+
+
+def _groups_registry_map() -> dict[str, dict]:
+    """chat_id -> baris wa_groups. Sengaja termasuk yang nonaktif, supaya admin
+    tahu bedanya 'belum terdaftar' dan 'terdaftar tapi sudah dinonaktifkan'."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, chat_id, is_active, is_default FROM wa_groups")
+        return {r["chat_id"]: r for r in cur.fetchall()}
 
 
 def _seed_default_group():
@@ -1714,6 +1724,76 @@ def delete_group(
         cur.execute("UPDATE wa_groups SET is_active = false, updated_at = now() WHERE id = %s", (group_id,))
         conn.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- WAHA groups discovery
+
+async def _waha_list_chats() -> list[dict]:
+    """Ambil seluruh chat dari WAHA, dinormalisasi jadi list.
+
+    Bentuk response berbeda antar versi WAHA: array langsung atau dibungkus
+    {data:[...]} / {results:[...]}.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(
+                f"{WAHA_URL}/api/{WAHA_SESSION}/chats",
+                params={"session": WAHA_SESSION},
+                headers=WAHA_HEADERS,
+            )
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"WAHA error: {e.response.status_code}") from e
+    except Exception as e:
+        log.warning("WAHA chats unreachable: %s", e)
+        raise HTTPException(status_code=502, detail="WAHA service unavailable") from e
+    if isinstance(data, dict):
+        data = data.get("data") or data.get("results") or []
+    return data if isinstance(data, list) else []
+
+
+@app.get("/api/waha/groups", tags=["Groups"],
+         summary="Daftar grup WA yang bot ikuti (langsung dari WAHA)",
+         description="Untuk admin: ambil chat_id grup tanpa harus membuka WAHA/UI. "
+                     "Hanya grup yang dikembalikan (DM disaring). Field registered menunjukkan "
+                     "apakah grup sudah ada di wa_groups; yang belum terdaftar diurutkan paling atas. "
+                     "Simpan lewat POST /api/groups.")
+async def list_waha_groups(
+    limit: int = Query(500, description="Jumlah grup maksimal yang dikembalikan"),
+    search: str | None = Query(None, description="Substring case-insensitive pada nama grup"),
+    request: Request = None,
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    chats = await _waha_list_chats()
+    registry = _groups_registry_map()
+    needle = search.lower() if search else None
+
+    out: list[dict] = []
+    for ch in chats:
+        if not isinstance(ch, dict):
+            continue
+        if ch.get("kind") != "group" and not ch.get("isGroup"):
+            continue
+        chat_id = norm_id(ch.get("id"))
+        if not chat_id:
+            continue
+        name = (ch.get("name") or "").strip() or chat_id
+        if needle and needle not in name.lower():
+            continue
+        row = registry.get(chat_id)
+        out.append({
+            "chat_id": chat_id,
+            "name": name,
+            "registered": row is not None,
+            "group_id": row["id"] if row else None,
+            "is_active": row["is_active"] if row else None,
+            "is_default": row["is_default"] if row else None,
+        })
+
+    out.sort(key=lambda g: (g["registered"], g["name"].lower()))
+    return out[:limit]
 
 
 # ---------------------------------------------------------------- Crawl & System

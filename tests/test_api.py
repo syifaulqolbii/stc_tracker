@@ -6,6 +6,7 @@ Updated for v1.2: new case types, new fields, new lookup endpoints.
 import os
 import sys
 import json
+import httpx
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock, call
 from fastapi.testclient import TestClient
@@ -820,6 +821,111 @@ class TestGetDefaultGroup:
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[None])
         with patch.object(main_module, "db", return_value=mock_conn):
             assert main_module._get_default_group() is None
+
+
+class TestWahaGroups:
+    """GET /api/waha/groups — discovery grup dari WAHA + penanda sudah terdaftar."""
+
+    CHATS = [
+        {"id": {"_serialized": "120363001@g.us"}, "name": "Grup Produksi",
+         "kind": "group", "isGroup": True},
+        {"id": {"_serialized": "628111000@c.us"}, "name": "Budi Personal",
+         "kind": "chat", "isGroup": False},
+        {"id": {"_serialized": "120363002@g.us"}, "name": "Grup Test Dev",
+         "kind": "group", "isGroup": True},
+        {"id": {"_serialized": "status@broadcast"}, "name": None, "kind": "chat"},
+    ]
+
+    def _client(self, payload=None, get_side_effect=None):
+        """Patch httpx.AsyncClient (GET) + db. Returns context manager + tc."""
+        import contextlib
+
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "chat_id": "120363001@g.us", "is_active": True, "is_default": False},
+        ]
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(main_module, "db", return_value=mock_conn))
+        mock_http = stack.enter_context(patch.object(main_module.httpx, "AsyncClient"))
+        client = AsyncMock()
+        if get_side_effect is not None:
+            client.get.side_effect = get_side_effect
+        else:
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = payload if payload is not None else self.CHATS
+            resp.raise_for_status = MagicMock()
+            client.get.return_value = resp
+        mock_http.return_value.__aenter__ = AsyncMock(return_value=client)
+        mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
+        return stack, TestClient(main_module.app)
+
+    def test_only_groups_listed_and_unregistered_first(self):
+        stack, tc = self._client()
+        try:
+            r = tc.get("/api/waha/groups")
+            assert r.status_code == 200
+            data = r.json()
+            ids = [g["chat_id"] for g in data]
+            # DM (628111000@c.us) + status@broadcast dibuang; yang belum terdaftar duluan
+            assert ids == ["120363002@g.us", "120363001@g.us"]
+            by_id = {g["chat_id"]: g for g in data}
+            assert by_id["120363001@g.us"]["registered"] is True
+            assert by_id["120363001@g.us"]["group_id"] == 1
+            assert by_id["120363001@g.us"]["is_active"] is True
+            assert by_id["120363002@g.us"]["registered"] is False
+            assert by_id["120363002@g.us"]["group_id"] is None
+        finally:
+            stack.close()
+
+    def test_handles_wrapped_waha_response(self):
+        """Response {data: [...]} ikut dinormalisasi."""
+        stack, tc = self._client(payload={"data": self.CHATS})
+        try:
+            r = tc.get("/api/waha/groups")
+            assert r.status_code == 200
+            assert len(r.json()) == 2
+        finally:
+            stack.close()
+
+    def test_search_filters_by_name(self):
+        stack, tc = self._client()
+        try:
+            r = tc.get("/api/waha/groups?search=test dev")
+            assert r.status_code == 200
+            data = r.json()
+            assert [g["name"] for g in data] == ["Grup Test Dev"]
+        finally:
+            stack.close()
+
+    def test_limit_caps_output(self):
+        stack, tc = self._client()
+        try:
+            r = tc.get("/api/waha/groups?limit=1")
+            assert r.status_code == 200
+            assert len(r.json()) == 1
+        finally:
+            stack.close()
+
+    def test_waha_http_error_returns_502(self):
+        req = httpx.Request("GET", "http://waha/api/default/chats")
+        err = httpx.HTTPStatusError("boom", request=req, response=httpx.Response(503, request=req))
+        stack, tc = self._client(get_side_effect=err)
+        try:
+            r = tc.get("/api/waha/groups")
+            assert r.status_code == 502
+            assert "WAHA error" in r.json()["detail"]
+        finally:
+            stack.close()
+
+    def test_waha_unreachable_returns_502(self):
+        stack, tc = self._client(get_side_effect=httpx.ConnectError("down"))
+        try:
+            r = tc.get("/api/waha/groups")
+            assert r.status_code == 502
+            assert "unavailable" in r.json()["detail"]
+        finally:
+            stack.close()
 
 
 class TestMediaHandling:
