@@ -1,7 +1,7 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.8 · **Tanggal:** 2 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
-**Referensi:** PRD v1.2, schema-v1-2.sql
+**Versi:** 1.10 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Referensi:** PRD v1.3, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
 
@@ -113,6 +113,8 @@ Content-Type: application/json
 
 ### 3.2 `POST /api/cases` — Buat & kirim case ke grup WA
 
+> **Catatan (v1.10 — grup default):** `group_id` kini **opsional** (int) — ID grup WA tujuan dari `GET /api/groups`, dipakai **switcher grup** di frontend. Kalau user **tidak memilih** grup (field dikosongkan / tidak dikirim), case otomatis dikirim ke **grup default** (`wa_groups.is_default = true` — biasanya grup test development; **tidak muncul** di list switcher, lihat §6.1). Case tetap ter-track penuh di grup default itu. Kalau belum ada grup default → `400`.
+
 **Headers:**
 ```
 X-API-Key: <key>
@@ -122,6 +124,7 @@ Content-Type: application/json
 **Request (contoh: STC + Non AO, field lengkap):**
 ```json
 {
+  "group_id": 1,
   "area_id": 1,
   "regional_id": 1,
   "sumber_ticket": "STC",
@@ -148,6 +151,7 @@ Content-Type: application/json
 **Request (contoh: Grapari + Non Order):**
 ```json
 {
+  "group_id": 1,
   "area_id": 3,
   "regional_id": 7,
   "sumber_ticket": "Grapari",
@@ -193,6 +197,7 @@ Content-Type: application/json
 ```
 
 Aturan:
+- `group_id` — **opsional**, int. ID grup WA tujuan (dari `GET /api/groups`). **Dikosongkan → grup default** (`is_default`, biasanya grup test development). Grup eksplisit tidak valid / `is_active=false` → `404`; tidak ada grup default terkonfigurasi → `400`.
 - Field **required** per jenis case: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). Field lain **opsional**.
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
@@ -202,15 +207,11 @@ Aturan:
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
 
-**Format pesan WhatsApp (otomatis):**
+**Format pesan WhatsApp (otomatis) — compact:**
 ```
 punten rekan @6281113021236 mohon bantuannya untuk case Non AO ada 1 case lagi
 
-#Non AO
-Area : Area 1
-Regional : Sumbagut
-Sumber Ticket : STC
-Jenis Case : Non AO
+#STC_Non AO_Area 1_Sumbagut
 Ticket Remedy : INC000023470570
 Order ID : MOk4260811023440131b25f60
 Nomer Indihome : 0211234567
@@ -222,6 +223,8 @@ https://prnt.sc/example1
 https://drive.google.com/example2
 ```
 
+> **Catatan compact header:** Format `#SumberTicket_JenisCase_Area_Regional`. Beberapa bagian bisa kosong jika field tidak diisi (contoh: `#Non AO` jika hanya jenis case).
+
 > **Catatan mention:** Backend menggunakan `@<nomor telepon>` di text, bukan `@<nama>`. WhatsApp otomatis render nama kontak dari phone book. Mention hanya work untuk kontak yang sudah save nomor bot.
 
 **Response `201`:**
@@ -230,12 +233,14 @@ https://drive.google.com/example2
   "id": 42,
   "case_code": "INC000023470570",
   "wa_message_id": "true_120363xxx@g.us_3EB0A1B2C3",
+  "group_id": 1,
+  "group_name": "Grup A",
   "text": "punten rekan @6281113021236 mohon bantuannya untuk case Non AO ada 1 case lagi\n\n#Non AO\nArea : Area 1\nRegional : Sumbagut\nSumber Ticket : STC\nJenis Case : Non AO\nTicket Remedy : INC000023470570\nOrder ID : MOk4260811023440131b25f60\nNomer Indihome : 0211234567\n..."
 }
 ```
 `text` adalah pesan final persis yang terkirim ke grup — tampilkan di toast/modal sukses sebagai bukti.
 
-**Error:** `401` API key tidak valid · `422` field tidak valid · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
+**Error:** `401` API key tidak valid · `404` `group_id` tidak ditemukan / tidak aktif · `400` `group_id` dikosongkan tapi belum ada grup default · `422` field tidak valid · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
 
 ---
 
@@ -255,6 +260,7 @@ X-API-Key: <key>
 | `case_type` | `Non Order` | filter jenis case (nama dari tabel lookup) |
 | `area_id` | `1` | filter berdasarkan Area ID |
 | `regional_id` | `2` | filter berdasarkan Regional ID |
+| `group_id` | `1` | filter berdasarkan grup WA (ID dari `GET /api/groups`) |
 | `sumber_ticket` | `Grapari` | filter sumber ticket |
 | `q` | `INC0000234` | pencarian substring di `case_code` dan `title` (case-insensitive) |
 
@@ -273,6 +279,8 @@ X-API-Key: <key>
     "sumber_ticket_id": 2,
     "jenis_case_id": 1,
     "asal_grapari": "GraPARI Bandung",
+    "group_id": 1,
+    "group_name": "Grup A",
     "area_name": "Area 1",
     "regional_name": "Regional 2",
     "sumber_ticket_name": "Grapari",
@@ -282,7 +290,7 @@ X-API-Key: <key>
   }
 ]
 ```
-Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru").
+Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru"). Setiap row kini menyertakan `group_id` dan `group_name` (hasil join `wa_groups`) — pakai untuk badge/nama grup di dashboard (switcher).
 
 ---
 
@@ -311,6 +319,8 @@ X-API-Key: <key>
     "sumber_ticket_id": 2,
     "jenis_case_id": 1,
     "asal_grapari": "GraPARI Bandung",
+    "group_id": 1,
+    "group_name": "Grup A",
     "area_name": "Area 1",
     "regional_name": "Regional 2",
     "sumber_ticket_name": "Grapari",
@@ -452,20 +462,48 @@ Content-Type: application/json
 X-API-Key: <key>
 ```
 
-**Query:** `limit` (default 200, maks mengikuti WAHA).
+**Query params:**
+| Param | Default | Keterangan |
+|---|---|---|
+| `limit` | 200 | Jumlah pesan histori yang diambil **per grup** (maks mengikuti WAHA) |
+| `group_id` | - | ID grup WA yang di-crawl (dari `GET /api/groups`). **Kosongkan → crawl SEMUA grup aktif** berurutan. |
 
 **Response `200`:**
 ```json
 {
-  "fetched": 200,
-  "stored": 187,
-  "updates_applied": 12,
+  "fetched": 400,
+  "stored": 370,
+  "updates_applied": 24,
   "store_errors": 0,
-  "process_errors": 1
+  "process_errors": 2,
+  "groups": [
+    {
+      "group_id": 1,
+      "group_name": "Grup A",
+      "fetched": 200,
+      "stored": 185,
+      "updates_applied": 12,
+      "store_errors": 0,
+      "process_errors": 1
+    },
+    {
+      "group_id": 2,
+      "group_name": "Grup B",
+      "fetched": 200,
+      "stored": 185,
+      "updates_applied": 12,
+      "store_errors": 0,
+      "process_errors": 1
+    }
+  ]
 }
 ```
+- Field level atas (`fetched`, `stored`, dst) = total seluruh grup yang di-crawl.
+- `groups[]` = rincian per grup — berguna untuk indikator progress per grup di UI admin.
 
-Operasi ini berat (tarik histori WA + proses). Jangan dipanggil otomatis dari UI utama — sediakan di halaman admin/pengaturan dengan konfirmasi.
+**Error:** `401` API key tidak valid · `404` `group_id` tidak ditemukan / grup tidak aktif · `400` tidak ada grup aktif untuk di-crawl.
+
+Operasi ini berat (tarik histori WA + proses, dijalankan per grup). Jangan dipanggil otomatis dari UI utama — sediakan di halaman admin/pengaturan dengan konfirmasi.
 
 ---
 
@@ -620,11 +658,89 @@ Data tidak dihapus, hanya `is_active` di-set `false`.
 
 ---
 
-## 6. Reminders (Sundul)
+## 6. WhatsApp Groups (Multi-Grup) — CRUD
+
+Tabel `wa_groups` = daftar grup WA tujuan case (label + `chat_id` @g.us). Dipakai **switcher grup** di form create case dan filter dashboard. Backend me-seed **satu grup awal ("Grup A")** dari env `WA_GROUP_ID` saat tabel masih kosong — tambah grup lain lewat endpoint di bawah ini.
+
+Selain itu ada **grup default** (`is_default = true`, maks 1 baris) sebagai fallback ketika user tidak memilih grup di switcher — biasanya **grup test development**. Grup default **tidak muncul** di `GET /api/groups` (kecuali `?include_default=true`) supaya tidak terlihat user, tapi **tetap ter-track penuh** oleh webhook/crawl/reminder karena barisnya terdaftar aktif.
+
+Bot (session WAHA) harus **di-add ke semua grup aktif** (termasuk grup default) agar webhook menerima pesan dari grup tersebut; pesan dari grup yang tidak terdaftar di-abaikan.
+
+### 6.1 `GET /api/groups` — Daftar grup WA (untuk switcher)
+
+**Headers:** `X-API-Key: <key>`
+
+**Query params:**
+| Param | Tipe | Keterangan |
+|---|---|---|
+| `is_active` | bool | Filter status aktif. **Gunakan `is_active=true` untuk populasi dropdown switcher.** |
+| `include_default` | bool | Default `false` → **grup default disaring keluar** (switcher bersih). `true` = sertakan (untuk halaman admin). |
+
+**Response `200`:**
+```json
+[
+  { "id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": true, "is_default": false, "created_at": "...", "updated_at": "..." },
+  { "id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": true, "is_default": false, "created_at": "...", "updated_at": "..." }
+]
+```
+
+---
+
+### 6.2 `POST /api/groups` — Tambah grup WA
+
+**Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
+
+**Request:**
+```json
+{ "name": "Grup B", "chat_id": "120363002@g.us" }
+```
+- `name` wajib, string (label unik).
+- `chat_id` wajib, format `digits@g.us` (contoh: `120363002@g.us`).
+- `is_default` opsional, bool (default `false`). `true` → jadikan grup fallback + **menggeser** default lama.
+
+**Response `201`:** Object grup lengkap.
+
+**Error:** `409` chat_id sudah terdaftar · `422` format chat_id salah.
+
+---
+
+### 6.3 `GET /api/groups/{id}` — Detail grup
+
+**Response `200`:** Object grup lengkap. **Error:** `404` tidak ditemukan.
+
+---
+
+### 6.4 `PUT /api/groups/{id}` — Update grup (label / chat_id / aktif / default)
+
+**Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
+
+**Request (partial — kirim hanya field yang diubah):**
+```json
+{ "name": "Grup B - Regional Jabar", "is_active": false }
+```
+```json
+{ "is_default": true }
+```
+- `is_default: true` → grup ini jadi fallback; default lama otomatis dilepas (maks 1 di level DB, partial unique index).
+- `is_default: false` → lepaskan status default.
+
+**Error:** `404` tidak ditemukan · `409` chat_id sudah dipakai grup lain · `422` field tidak valid / tidak ada field yang diubah.
+
+---
+
+### 6.5 `DELETE /api/groups/{id}` — Nonaktifkan grup (soft delete)
+
+Set `is_active = false`. Data tetap di DB karena case lama masih menunjuk grup ini. Setelah dinonaktifkan, case baru tidak bisa dikirim ke grup tsb dan webhook-nya tidak lagi di-track.
+
+**Response `200`:** `{ "ok": true }` · **Error:** `404` tidak ditemukan / sudah nonaktif.
+
+---
+
+## 7. Reminders (Sundul)
 
 Fitur untuk mengingatkan solver agar follow up case yang belum ditangani. Bot akan reply ke pesan case asli di grup WA dengan mention solver.
 
-### 6.1 `POST /api/cases/{id\}/reminder` — Manual reminder
+### 7.1 `POST /api/cases/{id\}/reminder` — Manual reminder
 
 **Headers:** `X-API-Key: <key>`
 
@@ -639,7 +755,7 @@ Bot akan reply ke `wa_message_id` case dengan pesan + mention solver.
 
 ---
 
-### 6.2 `GET /api/cases/{id\}/reminder` — Riwayat reminder case
+### 7.2 `GET /api/cases/{id\}/reminder` — Riwayat reminder case
 
 **Response `200`:**
 json
@@ -660,7 +776,7 @@ json
 
 ---
 
-### 6.4 `GET /api/reminders/pending` — Case yang perlu reminder
+### 7.4 `GET /api/reminders/pending` — Case yang perlu reminder
 
 **Headers:** `X-API-Key: <key>`
 
@@ -673,17 +789,18 @@ json
 | `regional_id` | - | Filter Regional ID |
 | `sumber_ticket` | - | Filter sumber ticket |
 | `jenis_case` | - | Filter jenis case |
+| `group_id` | - | Filter grup WA (ID dari `GET /api/groups`) |
 
 **Response `200`:**
 
 
 ---
 
-## 7. Media Serving
+## 8. Media Serving
 
 Backend mendownload media (image/video/doc) dari WAHA saat webhook masuk, menyimpan ke Docker volume, dan serve langsung dari backend. Frontend bisa langsung pakai `media_url` di `<img>` atau `<video>`.
 
-### 7.1 `GET /api/media/file/{filename}` — Serve media file lokal
+### 8.1 `GET /api/media/file/{filename}` — Serve media file lokal
 
 **Tidak perlu auth** (agar bisa diakses langsung oleh `<img>` / `<video>` di browser).
 
@@ -705,7 +822,7 @@ GET /api/media/file/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg
 
 > **Catatan:** `media_url` di timeline response (`GET /api/cases/{id}`) sudah berisi URL lengkap yang bisa langsung dipakai di `<img src="...">` atau `<video src="...">`. Frontend tidak perlu handle apapun.
 
-### 7.2 `GET /api/media/proxy` — Legacy proxy (fallback)
+### 8.2 `GET /api/media/proxy` — Legacy proxy (fallback)
 
 **Tidak perlu auth.**
 
@@ -1265,6 +1382,22 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.10 (7 September 2026)
+- **Grup default (fallback):** kolom `wa_groups.is_default` (maks 1 baris, partial unique index di `schema-migration-group-default.sql`).
+- `POST /api/cases`: `group_id` kini **opsional** — tidak dipilih → dikirim ke grup default (biasanya grup test development). Tanpa default terkonfigurasi → `400` (sebelumnya `422` karena wajib).
+- `GET /api/groups`: **menyaring keluar** grup default secara otomatis; pakai `?include_default=true` untuk admin. Response menambah field `is_default`.
+- `POST/PUT /api/groups`: dukung `is_default`; set `true` otomatis melepas default lama.
+- Frontend: switcher tetap opsional — tidak perlu pre-select, dan grup test tidak terlihat oleh user.
+
+### v1.9 (4 September 2026)
+- **Multi-grup WA (switcher Grup A/B):** tabel `wa_groups` + CRUD admin (`GET/POST/PUT/DELETE /api/groups`).
+- `POST /api/cases` kini **wajib** `group_id` (ID dari `GET /api/groups`); tanpa → `422`; grup tidak valid/nonaktif → `404`. Response menyertakan `group_id` & `group_name`.
+- `GET /api/cases` & `GET /api/reminders/pending`: filter baru `group_id`; row menyertakan `group_name`.
+- `POST /api/crawl`: param `group_id` (kosongkan → crawl semua grup aktif), response + breakdown `groups[]`.
+- Tracking webhook per-grup: pesan dari grup tak terdaftar diabaikan; case hanya di-link dari pesan di grupnya sendiri (anti false-positive lintas grup); LLM fallback hanya melihat case open di grup tsb.
+- Env `WA_GROUP_ID` = seed awal "Grup A" saat tabel kosong (bukan lagi satu-satunya target kirim).
+- Migrasi schema: `schema-multi-group.sql` (tabel `wa_groups` + `cases.group_id`).
 
 ### v1.8 (2 September 2026)
 - **Media download fix**: Webhook handler sekarang download media ke Docker volume (`/app/media/`) daripada cuma simpan proxy URL. File media persist meski container restart. Fix untuk error "media not found" yang muncul karena proxy URL ke WAHA expired/inaccessible.
