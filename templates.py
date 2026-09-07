@@ -108,20 +108,35 @@ Link Evidence :
 }
 
 
-def render_header(mentions: list[dict], case_type: str) -> str:
+def render_header(mentions: list[dict], case_type: str,
+                  custom_header: str | None = None) -> str:
     """Render the greeting + mention line at the top of the message.
 
     WhatsApp mentions require @<phone_number> in text for the mention to work.
     WAHA/WhatsApp automatically renders the display name from the contact.
 
-    Format: punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi
+    If custom_header is provided, use it with @<phone> mentions inserted.
+    Otherwise use default: punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi
     """
+    # Collect phone numbers from mentions
+    phones = [m.get("number", "") for m in mentions if m.get("number")]
+
+    if custom_header:
+        # Replace {phone} placeholder with @<phone> mentions
+        # If no {phone} placeholder, append @mentions at the end
+        if "{phone}" in custom_header:
+            phone_mentions = " ".join(f"@{p}" for p in phones)
+            return custom_header.replace("{phone}", phone_mentions)
+        elif phones:
+            phone_mentions = " ".join(f"@{p}" for p in phones)
+            return f"{custom_header} {phone_mentions}"
+        return custom_header
+
+    # Default header
     label = TYPE_LABELS.get(case_type, case_type.upper())
     parts = ["punten rekan"]
-    for m in mentions:
-        number = m.get("number", "")
-        if number:
-            parts.append(f"@{number}")
+    for p in phones:
+        parts.append(f"@{p}")
     parts.append(f"mohon bantuannya untuk case {label} ada 1 case lagi")
     return " ".join(parts)
 
