@@ -296,6 +296,27 @@ Server: `api.stc.it-jaya.id` (VPS 43.157.212.98) · Commit ter-deploy: `108129a`
 - Nginx healthcheck salah target (`wget localhost:80` refused) — traffic nyata sehat.
 - Crawl `/api/crawl` tidak diuji (opsional, berisiko backfill massal saat jam kerja).
 
+# ✅ RE-VERIFY FINAL (8 September 2026, pasca-deploy d1dfdf7) — SEMUA FIX TUNTAS
+
+| Bug | Status | Bukti live |
+|---|---|---|
+| #1 Server v1.9 → v1.11 | ✅ PASS | switcher `[]` (grup nonaktif tersaring); group_id nonaktif → 409 + nama grup |
+| #2 Webhook tanpa auth | ✅ PASS | tanpa secret → 401; dengan secret (header & query) → 200; URL webhook WAHA diperbaiki ke `http://moban-tracker:8000/webhooks/waha?token=...` (jalur lama `172.17.0.1:8000` terputus oleh fix #6 — ini efek samping yang diharapkan) |
+| #3 SSRF media proxy | ✅ PASS | `waha.attacker.com` → 400 (dulu 502 = fetch nyata) |
+| #4 Soft-delete dihormati | ✅ PASS | reply WA ke case terhapus: deleted_at/status/updated_at/count tetap (dulu bertambah) |
+| #5 Rate limit login | ✅ PASS | via nginx `limit_req zone=auth_login rate=5r/m burst=2`: 7× login → `401×5 429×2`; endpoint lain tetap 200. (Limiter in-memory backend tidak efektif multi-worker — solusi final di nginx, config live di `/home/ubuntu/frontend/nginx/default.conf`) |
+| #6 Port 8000 publik | ✅ PASS | dari luar → TERBLOKIR (000/timeout) |
+| #7 Cron auto-reminder | ⏸️ HOLD | keputusan user — tidak dikerjakan |
+
+**End-to-end terverifikasi:** create case → WA terkirim → reply `proses INCTEST003` → status `in_progress` (rantai WA → WAHA → backend hidup lewat jalur webhook ber-secret).
+
+**Catatan ops (ditemukan saat verifikasi):**
+- Nginx healthcheck "unhealthy" = healthcheck `wget localhost:80` mengikuti redirect 301 → TLS verify gagal dari dalam container. Traffic nyata selalu sehat. Kosmetik.
+- Folder `/home/ubuntu/frontend/nginx/` JANGAN dihapus: masih jadi rumah config live nginx + sertifikat TLS + target cron certbot renew. Migrasi hanya jika cron certbot ikut diupdate.
+- Secret webhook sempat tampil di log saat tes → disarankan rotasi: `openssl rand -hex 24`, update `.env`, `docker compose up -d app`, update `?token=` di URL webhook WAHA.
+
+---
+
 **Kesimpulan akhir:** Fitur inti bisnis (case → WA → reply-chain → media → reminder)
 sehat di produksi. Sebelum dipakai serius: naikkan v1.10 (#1), tutup webhook (#2),
 patch SSRF (#3), dan filter soft-delete (#4). Item #5–#7 menyusul.
