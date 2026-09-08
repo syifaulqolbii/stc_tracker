@@ -1,6 +1,6 @@
 # API Contract — Moban FU Case Tracker (untuk Tim Frontend)
 
-**Versi:** 1.11 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.12 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
 **Referensi:** PRD v1.5, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -264,7 +264,9 @@ Halo @6281113021236, mohon bantuannya ya 🙏
 ```
 `text` adalah pesan final persis yang terkirim ke grup — tampilkan di toast/modal sukses sebagai bukti.
 
-**Error:** `401` API key tidak valid · `404` `group_id` tidak ditemukan / tidak aktif · `400` `group_id` dikosongkan tapi belum ada grup default · `422` field tidak valid · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
+**Error:** `401` API key tidak valid · `422` `group_id` <= 0 atau ID tidak dikenal (pesan error menyebut nilainya) · `409` grup ada tetapi **sedang dinonaktifkan** (pesan error menyebut nama grupnya) · `400` `group_id` dikosongkan tapi belum ada grup default · `502` WAHA tidak terjangkau / session tidak WORKING (case **tidak** tersimpan, suruh user retry).
+
+> ⚠️ **Untuk frontend:** kalau user tidak memilih grup, **hilangkan field `group_id`** (atau kirim `null`) — jangan kirim `0`/`""`, keduanya ditolak. Untuk mengisi dropdown, panggil `GET /api/groups` **tanpa param**: hasilnya sudah aman (hanya grup aktif & bukan default), jadi opsi yang tampil dijamin bisa dipakai.
 
 ---
 
@@ -697,8 +699,10 @@ Bot (session WAHA) harus **di-add ke semua grup aktif** (termasuk grup default) 
 **Query params:**
 | Param | Tipe | Keterangan |
 |---|---|---|
-| `is_active` | bool | Filter status aktif. **Gunakan `is_active=true` untuk populasi dropdown switcher.** |
+| `include_inactive` | bool | Default `false` → **grup nonaktif disaring keluar**. `true` = sertakan (halaman admin). |
 | `include_default` | bool | Default `false` → **grup default disaring keluar** (switcher bersih). `true` = sertakan (untuk halaman admin). |
+
+**SAFE BY DEFAULT** — tanpa param apa pun endpoint ini sudah tepat untuk dropdown switcher: hanya grup **aktif** dan **bukan default** yang dikembalikan. (Sebelum v1.12: grup nonaktif ikut keluar kecuali caller mengirim `?is_active=true`, sehingga frontend bisa menyodorkan grup yang pasti ditolak saat create case. Param `is_active` sudah diganti `include_inactive`.)
 
 **Response `200`:**
 ```json
@@ -1451,6 +1455,23 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.13 (8 September 2026) — hardening keamanan pasca-audit produksi
+Perubahan keamanan dari hasil verifikasi produksi 8 Sep 2026 (lihat `docs/production-runbook.md`). **Tidak ada perubahan kontrak endpoint untuk frontend.**
+- **`POST /webhooks/waha` kini terproteksi**: jika env `WAHA_WEBHOOK_SECRET` ter-set, request wajib membawa secret via header `X-Webhook-Secret` atau query `?token=...`. Tanpa/salah → `401`. WAHA diarahkan ke URL webhook yang menyertakan token. (Kalau env kosong → perilaku lama, dengan log WARNING.)
+- **`GET /api/media/proxy` anti-SSRF**: hanya URL yang menunjuk TEPAT ke host:port `WAHA_URL` yang diproxy. Host lain (termasuk `waha.attacker.com`) → `400`. Redirect keluar host tidak diikuti.
+- **Soft-delete kini dihormati webhook**: reply WA ke case yang sudah di-delete tidak lagi memunculkan update/ubah status.
+- **Login `/api/auth/access-code` di-rate-limit**: maks 5 percobaan/menit/IP (env `LOGIN_RATE_LIMIT`), lebih → `429`.
+- Deploy: port app hanya bind `127.0.0.1` (akses publik eksklusif via nginx/TLS).
+
+### v1.12 (7 September 2026) — perbaikan error switcher grup
+Penyebab: frontend mengirim `group_id` grup yang sedang di-inaktifkan admin → dapat `404 "Group not found or inactive"` yang tidak menyebut apa-apa, sementara `GET /api/groups` justru menyodorkan grup nonaktif itu ke dropdown.
+- **`GET /api/groups` kini SAFE BY DEFAULT**: hanya grup **aktif** dan **bukan default**. Param `is_active` **diganti** `include_inactive` (admin). Call lama `?is_active=true` tetap aman (param tak dikenal diabaikan → hasil tetap aktif-saja).
+- **`POST /api/cases`, `group_id` divalidasi `>= 1`** → `0`/negatif → `422` dengan pesan Pydantic, tanpa menyentuh DB.
+- ID tidak dikenal: `404` → **`422`** dengan nilai yang ditolak: `group_id 999 tidak dikenal — pakai ID dari GET /api/groups atau hilangkan field untuk mengirim ke grup default`.
+- Grup ada tapi nonaktif: `404` → **`409`** dengan nama grupnya: `grup 'Escalation OPERA - CX100' sedang dinonaktifkan admin — pilih grup lain atau minta grup ini diaktifkan kembali`.
+- Frontend: saat tidak memilih grup, **hilangkan `group_id`** (jangan kirim `0`).
+- Backend versi 1.10.0. Tidak ada perubahan skema DB.
 
 ### v1.11 (7 September 2026)
 - **Endpoint baru `GET /api/waha/groups`** (admin): daftar semua grup yang bot ikuti, diambil langsung dari WAHA — tidak perlu salin `chat_id` manual dari UI/CLI WAHA.

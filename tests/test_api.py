@@ -114,6 +114,16 @@ def _create_case_mock_sequence(
     return seq
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """In-memory rate limiter (60 rpm/IP) dibagi antar test dalam satu proses —
+    TestClient selalu pakai IP yang sama, jadi bucket-nya wajib dibersihkan
+    supaya suite tidak mulai mengembalikan 429 hanya karena jumlah test bertambah."""
+    main_module._rate_buckets.clear()
+    yield
+    main_module._rate_buckets.clear()
+
+
 class TestCreateCase:
     def test_create_non_order_case(self, client):
         tc, mock_cursor = client
@@ -295,21 +305,54 @@ class TestCreateCase:
         assert response.status_code == 400
         assert "default" in response.json()["detail"]
 
-    def test_create_case_invalid_group(self, client):
-        """Invalid/inactive group_id → 404 (tidak fallback ke default)."""
+    def test_create_case_unknown_group_returns_422(self, client):
+        """group_id tidak dikenal → 422 yang menyebutkan nilainya (bukan 404 generik)."""
         tc, mock_cursor = client
-        # sequence: jenis lookup ok, then _get_group returns None
         mock_cursor.fetchone.side_effect = [
             {"id": 1},  # jenis_case lookup
-            None,       # group not found/inactive
+            None,       # _get_group(999) → tidak ada yang aktif
+            None,       # _get_group_any(999) → memang tidak ada barisnya
         ]
         response = tc.post("/api/cases", json={
             "group_id": 999,
             "jenis_case": "Non Order",
             "fields": {"ticket_remedy": "INC123"},
         })
-        assert response.status_code == 404
-        assert "Group not found" in response.json()["detail"]
+        assert response.status_code == 422
+        detail = str(response.json()["detail"])
+        assert "999" in detail
+        assert "tidak dikenal" in detail
+
+    def test_create_case_inactive_group_returns_409_with_name(self, client):
+        """Grup ada tapi is_active=false → 409 dengan NAMA grup, bukan 404 tanpa konteks."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 1},  # jenis_case lookup
+            None,       # _get_group(2) → tidak aktif
+            {"id": 2, "name": "Escalation OPERA - CX100",
+             "chat_id": "120363410063803591@g.us", "is_active": False},  # _get_group_any(2)
+        ]
+        response = tc.post("/api/cases", json={
+            "group_id": 2,
+            "jenis_case": "Non Order",
+            "fields": {"ticket_remedy": "INC123"},
+        })
+        assert response.status_code == 409
+        detail = str(response.json()["detail"])
+        assert "Escalation OPERA - CX100" in detail
+        assert "dinonaktifkan" in detail
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_create_case_non_positive_group_rejected_by_validation(self, client, bad):
+        """group_id <= 0 ditolak Pydantic (ge=1) — tanpa menyentuh DB."""
+        tc, mock_cursor = client
+        response = tc.post("/api/cases", json={
+            "group_id": bad,
+            "jenis_case": "Non Order",
+            "fields": {"ticket_remedy": "INC123"},
+        })
+        assert response.status_code == 422
+        assert "greater than or equal to 1" in str(response.json()["detail"])
 
 
 class TestHealthCheck:
@@ -449,14 +492,79 @@ class TestAuth:
             response = tc.get("/health")
             assert response.status_code == 200
 
-    def test_webhook_never_requires_auth(self, mock_waha):
+    def test_webhook_never_requires_api_key_auth(self, mock_waha):
+        """X-API-Key tetap tidak berlaku untuk webhook (auth webhook pakai secret sendiri).
+        WAHA_WEBHOOK_SECRET kosong → mode lama, request diterima."""
         mock_conn, mock_cursor = _make_mock_db()
         with patch.object(main_module, "db", return_value=mock_conn), \
-             patch.object(main_module, "BACKEND_API_KEY", "secret-key-123"):
+             patch.object(main_module, "BACKEND_API_KEY", "secret-key-123"), \
+             patch.object(main_module, "WAHA_WEBHOOK_SECRET", ""):
             tc = TestClient(main_module.app)
             response = tc.post("/webhooks/waha", json={"event": "session.status"})
             assert response.status_code == 200
             assert response.json()["ok"] is True
+
+
+class TestWebhookSecret:
+    """v1.13 — webhook WAHA wajib membawa shared secret (anti spoofing)."""
+
+    def test_reject_without_secret_when_configured(self, mock_waha):
+        with patch.object(main_module, "WAHA_WEBHOOK_SECRET", "rahasia123"):
+            tc = TestClient(main_module.app)
+            r = tc.post("/webhooks/waha", json={"event": "message", "payload": {}})
+            assert r.status_code == 401
+
+    def test_reject_wrong_secret(self, mock_waha):
+        with patch.object(main_module, "WAHA_WEBHOOK_SECRET", "rahasia123"):
+            tc = TestClient(main_module.app)
+            r = tc.post("/webhooks/waha", json={"event": "message", "payload": {}},
+                        headers={"X-Webhook-Secret": "salah"})
+            assert r.status_code == 401
+
+    def test_accept_correct_header_secret(self, mock_waha):
+        with patch.object(main_module, "WAHA_WEBHOOK_SECRET", "rahasia123"), \
+             patch.object(main_module, "handle_message", new_callable=AsyncMock) as mock_handle:
+            tc = TestClient(main_module.app)
+            r = tc.post("/webhooks/waha", json={"event": "message", "payload": {}},
+                        headers={"X-Webhook-Secret": "rahasia123"})
+            assert r.status_code == 200
+            mock_handle.assert_called_once()
+
+    def test_accept_correct_token_query_param(self, mock_waha):
+        with patch.object(main_module, "WAHA_WEBHOOK_SECRET", "rahasia123"), \
+             patch.object(main_module, "handle_message", new_callable=AsyncMock) as mock_handle:
+            tc = TestClient(main_module.app)
+            r = tc.post("/webhooks/waha?token=rahasia123",
+                        json={"event": "message", "payload": {}})
+            assert r.status_code == 200
+            mock_handle.assert_called_once()
+
+
+class TestLoginRateLimit:
+    """v1.13 — anti brute-force login access-code (maks 5/menit/IP)."""
+
+    def test_sixth_attempt_returns_429(self, mock_waha):
+        with patch.object(main_module, "ACCESS_CODES", ["CODE123"]), \
+             patch.object(main_module, "LOGIN_RATE_LIMIT", 5):
+            main_module._rate_buckets.clear()
+            tc = TestClient(main_module.app)
+            statuses = []
+            for _ in range(6):
+                r = tc.post("/api/auth/access-code", json={"code": "WRONG"})
+                statuses.append(r.status_code)
+            assert statuses[:5] == [401, 401, 401, 401, 401]
+            assert statuses[5] == 429
+
+    def test_limit_not_triggered_below_threshold(self, mock_waha):
+        with patch.object(main_module, "ACCESS_CODES", ["CODE123"]), \
+             patch.object(main_module, "LOGIN_RATE_LIMIT", 5):
+            main_module._rate_buckets.clear()
+            tc = TestClient(main_module.app)
+            for _ in range(4):
+                assert tc.post("/api/auth/access-code", json={"code": "WRONG"}).status_code == 401
+            # lalu login benar tetap bisa
+            r = tc.post("/api/auth/access-code", json={"code": "CODE123"})
+            assert r.status_code == 200
 
 
 class TestWebhook:
@@ -650,12 +758,12 @@ class TestGroups:
     def test_list_groups(self, mock_waha):
         mock_conn, mock_cursor = _make_mock_db()
         mock_cursor.fetchall.return_value = [
-            {"id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": True},
-            {"id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": True},
+            {"id": 1, "name": "Grup A", "chat_id": "120363001@g.us", "is_active": True, "is_default": False},
+            {"id": 2, "name": "Grup B", "chat_id": "120363002@g.us", "is_active": True, "is_default": False},
         ]
         with patch.object(main_module, "db", return_value=mock_conn):
             tc = TestClient(main_module.app)
-            response = tc.get("/api/groups?is_active=true")
+            response = tc.get("/api/groups")
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 2
@@ -739,6 +847,32 @@ class TestGroups:
             assert response.status_code == 200
             sql = mock_cursor.execute.call_args[0][0]
             assert "is_default = false" in sql
+
+    def test_list_groups_excludes_inactive_by_default(self, mock_waha):
+        """SAFE BY DEFAULT: tanpa param apa pun, grup nonaktif tidak disodorkan ke switcher.
+
+        Regression: dulu endpoint ini mengembalikan grup nonaktif kecuali caller ingat
+        mengirim ?is_active=true — frontend jadi memilih grup yang pasti ditolak.
+        """
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups")
+            assert response.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "is_active = true" in sql
+
+    def test_list_groups_include_inactive_param(self, mock_waha):
+        """?include_inactive=true → filter aktif dilepas (untuk admin)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/groups?include_inactive=true")
+            assert response.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "is_active = true" not in sql
 
     def test_list_groups_include_default_param(self, mock_waha):
         """?include_default=true → filter default dilepas (untuk admin)."""
@@ -1019,7 +1153,8 @@ class TestMediaProxy:
         async_client = AsyncMock()
         async_client.get.return_value = mock_resp
 
-        with patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client, \
              patch("builtins.open", MagicMock()):
             mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1053,7 +1188,8 @@ class TestMediaProxy:
         async_client = AsyncMock()
         async_client.get.return_value = mock_resp
 
-        with patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client, \
              patch("builtins.open", MagicMock()):
             mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1066,6 +1202,76 @@ class TestMediaProxy:
         tc = TestClient(main_module.app)
         resp = tc.get("/api/media/proxy?url=https://evil.com/hack.jpg")
         assert resp.status_code == 400
+
+
+class TestAntiSsrf:
+    """v1.13 — validasi host TEPAT WAHA_URL (anti bypass substring)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_url", [
+        "http://waha.attacker.com/x.jpg",      # mengandung "waha" tapi host lain
+        "http://localhost.attacker.com/x.jpg",  # mengandung "localhost" tapi host lain
+        "http://127.0.0.1.evil.com/x.jpg",
+        "https://evil.com/x.jpg",
+        "http://waha@evil.com/x.jpg",           # userinfo trick
+        "file:///etc/passwd",
+        "",
+        None,
+    ])
+    async def test_is_waha_url_rejects_foreign_hosts(self, bad_url):
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"):
+            assert main_module._is_waha_url(bad_url) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("good_url", [
+        "http://waha:3000/api/files/abc.jpg",
+        "http://waha:3000/api/files/abc.jpg?token=x",
+    ])
+    async def test_is_waha_url_accepts_exact_host(self, good_url):
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"):
+            assert main_module._is_waha_url(good_url) is True
+
+    @pytest.mark.asyncio
+    async def test_download_media_rewrites_localhost_then_accepts(self):
+        """URL localhost:3000 di-rewrite ke netloc WAHA sebelum cek → lolos."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "image/jpeg"}
+        mock_resp.content = b"x"
+        async_client = AsyncMock()
+        async_client.get.return_value = mock_resp
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+             patch("builtins.open", MagicMock()):
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await main_module._download_media("http://localhost:3000/api/files/abc.jpg")
+            assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_is_waha_url_rejects_wrong_port(self):
+        """Host sama tapi port beda → ditolak."""
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"):
+            assert main_module._is_waha_url("http://waha:9999/x.jpg") is False
+
+    @pytest.mark.asyncio
+    async def test_download_media_blocks_foreign_host(self):
+        """_download_media menolak (return None) untuk host asing — tanpa fetch."""
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client:
+            result = await main_module._download_media("http://waha.attacker.com/x.jpg")
+            assert result is None
+            mock_client.assert_not_called()  # TIDAK ada request keluar
+
+    def test_media_proxy_blocks_substring_bypass(self):
+        """Regression dari audit produksi: waha.attacker.com dulu 502 (fetch nyata),
+        kini harus 400 tanpa fetch."""
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client:
+            tc = TestClient(main_module.app)
+            resp = tc.get("/api/media/proxy?url=http%3A%2F%2Fwaha.attacker.com%2Fx.jpg")
+            assert resp.status_code == 400
+            mock_client.assert_not_called()
 
     def test_serve_media_file_invalid_filename(self):
         """serve_media_file should reject invalid filenames."""
@@ -1096,13 +1302,96 @@ class TestMediaProxy:
         async_client = AsyncMock()
         async_client.get.return_value = mock_resp
 
-        with patch.object(main_module.httpx, "AsyncClient") as mock_client:
+        with patch.object(main_module, "WAHA_URL", "http://waha:3000"), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
             tc = TestClient(main_module.app)
             resp = tc.get("/api/media/proxy?url=http://waha:3000/api/files/abc.jpg")
             assert resp.status_code == 200
             assert resp.headers["content-type"] == "image/jpeg"
+
+
+class TestSoftDeleteWebhook:
+    """v1.13 — case terhapus (deleted_at) tidak boleh di-update via webhook/reminder."""
+
+    def test_find_case_by_code_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.find_case_by_code("INC123")
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
+
+    def test_find_case_by_chain_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchone.return_value = None
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.find_case_by_chain("msg_123")
+            sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+            assert all("deleted_at IS NULL" in s for s in sqls if "FROM cases" in s)
+
+    def test_open_case_codes_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.open_case_codes()
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
+
+    def test_auto_reminder_query_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(
+                main_module.run_auto_reminders(request=None))
+
+    def test_pending_reminders_excludes_deleted(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            r = tc.get("/api/reminders/pending?hours=0")
+            assert r.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
+
+
+class TestSoftDeleteWebhook:
+    """v1.13 — case terhapus (deleted_at) tidak boleh di-update via webhook/reminder."""
+
+    def test_find_case_by_code_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.find_case_by_code("INC123")
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
+
+    def test_find_case_by_chain_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchone.return_value = None
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.find_case_by_chain("msg_123")
+            sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+            assert all("deleted_at IS NULL" in s for s in sqls if "FROM cases" in s)
+
+    def test_open_case_codes_excludes_deleted(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.open_case_codes()
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
+
+    def test_pending_reminders_excludes_deleted(self, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn):
+            tc = TestClient(main_module.app)
+            r = tc.get("/api/reminders/pending?hours=0")
+            assert r.status_code == 200
+            sql = mock_cursor.execute.call_args[0][0]
+            assert "deleted_at IS NULL" in sql
 
 
 class TestReminder:

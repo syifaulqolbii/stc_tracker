@@ -1,4 +1,4 @@
-"""Moban FU Case Tracker v1.9 — multi-group + grup default fallback, reply-chain traversal.
+"""Moban FU Case Tracker v1.10 — multi-group + grup default fallback, reply-chain traversal.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
@@ -6,6 +6,11 @@ Perubahan v1.8: group_id opsional — tanpa pilihan dikirim ke grup default
 (is_default, maks 1 baris, tersembunyi dari switcher GET /api/groups).
 Perubahan v1.9: GET /api/waha/groups — daftar grup yang bot join langsung dari WAHA
 lengkap penanda sudah terdaftar / belum, untuk memudahkan ambil chat_id.
+Perubahan v1.10: GET /api/groups safe-by-default (hanya grup aktif & bukan default,
+param is_active diganti include_inactive) + error group_id lebih jelas (422/409).
+Perubahan v1.11: hardening keamanan — webhook secret (WAHA_WEBHOOK_SECRET), anti-SSRF
+media proxy (host harus tepat WAHA_URL), soft-delete dihormati webhook/reminder,
+rate limit login access-code, port app bind 127.0.0.1.
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -16,11 +21,13 @@ import json
 import logging
 import os
 import re
+import secrets
 import jwt
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse, urlunparse, quote
 
 import httpx
 import psycopg
@@ -48,6 +55,9 @@ log = logging.getLogger("moban-tracker")
 WAHA_URL = os.getenv("WAHA_URL", "http://localhost:3000")
 WAHA_KEY = os.getenv("WAHA_API_KEY", "")
 WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
+# Shared secret untuk webhook WAHA — kalau ter-set, POST /webhooks/waha wajib
+# membawa secret via header X-Webhook-Secret atau query ?token=... (anti spoofing)
+WAHA_WEBHOOK_SECRET = os.getenv("WAHA_WEBHOOK_SECRET", "")
 WA_GROUP_ID = os.getenv("WA_GROUP_ID", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/moban")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -76,13 +86,16 @@ async def _download_media(waha_url: str) -> str | None:
         # Rewrite localhost -> waha for Docker networking
         fetch_url = waha_url
         if "localhost" in fetch_url or "127.0.0.1" in fetch_url:
-            from urllib.parse import urlparse, urlunparse
             parsed = urlparse(fetch_url)
             waha_parsed = urlparse(WAHA_URL)
             fetch_url = urlunparse(parsed._replace(
                 scheme=waha_parsed.scheme, netloc=waha_parsed.netloc))
+        # Anti-SSRF: hanya fetch URL yang menunjuk tepat ke host WAHA
+        if not _is_waha_url(fetch_url):
+            log.warning("Blocked non-WAHA media URL: %s", waha_url[:80])
+            return None
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=True)
+            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=False)
             if resp.status_code != 200:
                 log.warning("Media download failed: %s -> %s", waha_url[:80], resp.status_code)
                 return None
@@ -122,9 +135,31 @@ def _rewrite_media_url(url: str | None) -> str | None:
     if not url:
         return None
     if "waha" in url or "localhost" in url or "127.0.0.1" in url:
-        from urllib.parse import quote
         return f"{BACKEND_PUBLIC_URL}/api/media/proxy?url={quote(url, safe='')}" 
     return url
+
+
+def _is_waha_url(url: str | None) -> bool:
+    """Anti-SSRF: True hanya jika URL menunjuk TEPAT ke host:port WAHA.
+
+    Menggantikan validasi substring lama ("waha" in url) yang bisa di-bypass
+    dengan host seperti waha.attacker.com atau localhost.attacker.com.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    waha_parsed = urlparse(WAHA_URL)
+    # hostname (bukan netloc) — URL dengan userinfo (http://waha@evil.com) gugur di sini
+    if (parsed.hostname or "") != (waha_parsed.hostname or ""):
+        return False
+    def _port(p, scheme):
+        return p.port or (443 if scheme == "https" else 80)
+    return _port(parsed, parsed.scheme) == _port(waha_parsed, waha_parsed.scheme)
 
 
 async def _download_and_rewrite_media(waha_url: str | None) -> str | None:
@@ -153,13 +188,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Moban FU Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.9. "
+        "Backend API untuk Moban FU Case Tracker v1.10. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
-        "multi-grup WA (switcher tujuan case + grup default fallback + discovery /api/waha/groups), "
+        "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.9.0",
+    version="1.11.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -222,6 +257,21 @@ async def check_rate_limit(request: Request):
     bucket[:] = [t for t in bucket if now - t < window]
     if len(bucket) >= RATE_LIMIT_RPM:
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    bucket.append(now)
+
+
+# Rate limit ketat khusus login (anti brute-force access code)
+LOGIN_RATE_LIMIT = int(os.getenv("LOGIN_RATE_LIMIT", "5"))  # percobaan per menit per IP
+
+
+def check_login_rate_limit(request: Request):
+    """Maks LOGIN_RATE_LIMIT percobaan login per menit per IP."""
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    bucket = _rate_buckets.setdefault(f"login:{client_ip}", [])
+    bucket[:] = [t for t in bucket if now - t < 60.0]
+    if len(bucket) >= LOGIN_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Terlalu banyak percobaan login. Coba lagi nanti.")
     bucket.append(now)
 
 
@@ -452,7 +502,7 @@ def store_message(wa_mid, quoted_id, author, body, from_me=False, media_url=None
 
 def find_case_by_code(code: str):
     with db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM cases WHERE case_code = %s", (code,))
+        cur.execute("SELECT * FROM cases WHERE case_code = %s AND deleted_at IS NULL", (code,))
         return cur.fetchone()
 
 
@@ -464,7 +514,7 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
     with db() as conn, conn.cursor() as cur_db:
         while cur and depth < MAX_CHAIN_DEPTH:
             # WAHA may send short/partial IDs, use LIKE for matching
-            cur_db.execute("SELECT * FROM cases WHERE wa_message_id = %s OR wa_message_id LIKE %s", (cur, f"%{cur}%"))
+            cur_db.execute("SELECT * FROM cases WHERE (wa_message_id = %s OR wa_message_id LIKE %s) AND deleted_at IS NULL", (cur, f"%{cur}%"))
             case = cur_db.fetchone()
             if case:
                 # Direct match to root message = reply; anything deeper = chain
@@ -476,7 +526,7 @@ def find_case_by_chain(quoted_id: str | None) -> tuple[dict | None, str]:
             if not row:
                 return None, ""
             if row["case_id"]:
-                cur_db.execute("SELECT * FROM cases WHERE id = %s", (row["case_id"],))
+                cur_db.execute("SELECT * FROM cases WHERE id = %s AND deleted_at IS NULL", (row["case_id"],))
                 case = cur_db.fetchone()
                 if case:
                     # Found via wa_messages.case_id = not a direct reply to root
@@ -489,10 +539,10 @@ def open_case_codes(group_id: int | None = None) -> list[str]:
     with db() as conn, conn.cursor() as cur:
         if group_id is not None:
             cur.execute("""SELECT case_code FROM cases
-                           WHERE status != 'done' AND case_code IS NOT NULL AND group_id = %s""",
+                           WHERE status != 'done' AND case_code IS NOT NULL AND deleted_at IS NULL AND group_id = %s""",
                         (group_id,))
         else:
-            cur.execute("SELECT case_code FROM cases WHERE status != 'done' AND case_code IS NOT NULL")
+            cur.execute("SELECT case_code FROM cases WHERE status != 'done' AND case_code IS NOT NULL AND deleted_at IS NULL")
         return [r["case_code"] for r in cur.fetchall()]
 
 
@@ -552,6 +602,14 @@ def _get_group(group_id: int) -> dict | None:
     """Resolve grup aktif by ID. Return row atau None."""
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM wa_groups WHERE id = %s AND is_active = true", (group_id,))
+        return cur.fetchone()
+
+
+def _get_group_any(group_id: int) -> dict | None:
+    """Resolve grup by ID tanpa mempedulikan is_active — untuk membedakan
+    'ID tidak dikenal' dari 'grup sedang dinonaktifkan' di pesan error."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM wa_groups WHERE id = %s", (group_id,))
         return cur.fetchone()
 
 
@@ -824,7 +882,7 @@ class Mention(BaseModel):
     name: str | None = Field(None, description="Nama kontak (opsional, hanya untuk tampilan)")
 
 class CaseIn(BaseModel):
-    group_id: int | None = Field(None, description="ID grup WA tujuan. Lihat GET /api/groups. Kosongkan → dikirim ke grup default (is_default)")
+    group_id: int | None = Field(None, ge=1, description="ID grup WA tujuan (>= 1). Lihat GET /api/groups. Kosongkan → dikirim ke grup default (is_default)")
     area_id: int | None = Field(None, description="ID Area. Lihat GET /api/areas")
     regional_id: int | None = Field(None, description="ID Regional (tergantung Area). Lihat GET /api/areas/{area_id}/regionals")
     sumber_ticket: str | None = Field(None, description="Sumber Ticket: STC, Grapari, atau Web IT. Lihat GET /api/sumber-tickets")
@@ -912,13 +970,14 @@ class AccessCodeIn(BaseModel):
 @app.post("/api/auth/access-code", tags=["Auth"],
           summary="Login dengan kode akses",
           description="Validasi kode akses dan return JWT token untuk akses frontend.")
-def login_with_access_code(inp: AccessCodeIn):
+def login_with_access_code(inp: AccessCodeIn, request: Request,
+                           _rate: None = Depends(check_login_rate_limit)):
     if not ACCESS_CODES:
         raise HTTPException(status_code=503, detail="Access codes not configured on server")
     if inp.code not in ACCESS_CODES:
         raise HTTPException(status_code=401, detail="Invalid access code")
     token = jwt.encode(
-        {"sub": "access_code", "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS)},
+        {"sub": "access_code", "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS)},
         JWT_SECRET, algorithm="HS256"
     )
     return {"token": token, "expires_in": JWT_EXPIRY_HOURS * 3600}
@@ -938,7 +997,18 @@ async def create_case(inp: CaseIn, request: Request,
     if inp.group_id is not None:
         group = _get_group(inp.group_id)
         if not group:
-            raise HTTPException(status_code=404, detail="Group not found or inactive. Lihat GET /api/groups")
+            known = _get_group_any(inp.group_id)
+            if not known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"group_id {inp.group_id} tidak dikenal — pakai ID dari GET /api/groups "
+                           f"atau hilangkan field untuk mengirim ke grup default",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"grup '{known['name']}' sedang dinonaktifkan admin — pilih grup lain "
+                       f"atau minta grup ini diaktifkan kembali",
+            )
     else:
         group = _get_default_group()
         if not group:
@@ -1128,7 +1198,7 @@ def set_status(case_id: int, inp: StatusIn, request: Request,
         cur.execute(
             """INSERT INTO wa_messages (wa_message_id, case_id, author, body, from_me)
                VALUES (%s,%s,'manual',%s,true) ON CONFLICT DO NOTHING""",
-            (f"manual-{case_id}-{inp.status}-{int(__import__('time').time())}", case_id, inp.note),
+            (f"manual-{case_id}-{inp.status}-{uuid.uuid4().hex}", case_id, inp.note),
         )
         cur.execute("UPDATE cases SET status = %s, updated_at = now() WHERE id = %s",
                     (inp.status, case_id))
@@ -1225,7 +1295,7 @@ async def send_reminder(
     _rate: None = Depends(check_rate_limit),
 ):
     with db() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
+        cur.execute("SELECT * FROM cases WHERE id = %s AND deleted_at IS NULL", (case_id,))
         case = cur.fetchone()
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
@@ -1294,6 +1364,7 @@ async def run_auto_reminders(
         cur.execute(
             """SELECT * FROM cases
                WHERE status IN ('open', 'in_progress')
+                 AND deleted_at IS NULL
                  AND updated_at < now() - make_interval(hours => %s)
                  AND (last_reminder_at IS NULL
                       OR last_reminder_at < now() - make_interval(hours => %s))
@@ -1380,6 +1451,7 @@ def list_pending_reminders(
              LEFT JOIN sumber_tickets st ON c.sumber_ticket_id = st.id
              LEFT JOIN jenis_cases jc ON c.jenis_case_id = jc.id
              WHERE c.status IN ('open', 'in_progress')
+               AND c.deleted_at IS NULL
                AND c.updated_at < now() - make_interval(hours => %s)
                AND (c.last_reminder_at IS NULL
                     OR c.last_reminder_at < now() - make_interval(hours => %s))"""
@@ -1428,10 +1500,27 @@ def list_case_reminders(
 
 # ---------------------------------------------------------------- Webhooks
 
+def _verify_webhook_secret(req: Request, token: str | None = None) -> None:
+    """Validasi shared secret webhook WAHA. Skip jika WAHA_WEBHOOK_SECRET kosong
+    (mode lama) — tapi log WARNING supaya operator tahu webhooknya terbuka."""
+    if not WAHA_WEBHOOK_SECRET:
+        log.warning("WAHA_WEBHOOK_SECRET not set — webhook /webhooks/waha is UNPROTECTED")
+        return
+    provided = req.headers.get("X-Webhook-Secret") or token
+    if not provided or not secrets.compare_digest(provided, WAHA_WEBHOOK_SECRET):
+        log.warning("Webhook rejected: invalid secret from %s",
+                    req.client.host if req.client else "unknown")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+
 @app.post("/webhooks/waha", tags=["Webhooks"],
           summary="Webhook receiver dari WAHA",
-          description="Menerima event dari WAHA: message, message.ack, dll.")
-async def waha_webhook(req: Request):
+          description="Menerima event dari WAHA: message, message.ack, dll. "
+                      "Jika WAHA_WEBHOOK_SECRET ter-set, request wajib membawa secret "
+                      "lewat header X-Webhook-Secret atau query ?token=...")
+async def waha_webhook(req: Request,
+                       token: str | None = Query(None, description="Secret webhook (alternatif header X-Webhook-Secret)")):
+    _verify_webhook_secret(req, token)
     try:
         data = await req.json()
     except Exception:
@@ -1586,20 +1675,19 @@ def delete_solver_contact(
 
 @app.get("/api/groups", tags=["Groups"],
          summary="Daftar grup WhatsApp (switcher)",
-         description="Return list grup WA. Query: is_active=true untuk switcher frontend. "
-                     "Grup default (is_default) DISEMBUNYIKAN kecuali include_default=true.")
+         description="SAFE BY DEFAULT untuk switcher frontend: hanya grup AKTIF dan BUKAN default "
+                     "yang dikembalikan. Admin: include_inactive=true / include_default=true.")
 def list_groups(
     request: Request,
-    is_active: bool | None = Query(None, description="Filter status aktif. Kosongkan untuk semua."),
+    include_inactive: bool = Query(False, description="true = sertakan grup nonaktif (admin). Default: hanya aktif."),
     include_default: bool = Query(False, description="true = sertakan grup default (untuk admin). Default: hanya grup yang bisa dipilih user."),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
     sql = "SELECT id, name, chat_id, is_active, is_default, created_at, updated_at FROM wa_groups WHERE true"
     args: list = []
-    if is_active is not None:
-        sql += " AND is_active = %s"
-        args.append(is_active)
+    if not include_inactive:
+        sql += " AND is_active = true"
     if not include_default:
         sql += " AND is_default = false"
     sql += " ORDER BY name"
@@ -1923,18 +2011,20 @@ async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
     Lazy migration: when media is accessed via proxy, download and save locally.
     Update database so future requests use local file URL.
     """
-    if not url or ("waha" not in url and "localhost" not in url and "127.0.0.1" not in url):
-        raise HTTPException(status_code=400, detail="Invalid media URL")
     try:
         fetch_url = url
         if "localhost" in fetch_url or "127.0.0.1" in fetch_url:
-            from urllib.parse import urlparse, urlunparse
             parsed = urlparse(fetch_url)
             waha_parsed = urlparse(WAHA_URL)
             fetch_url = urlunparse(parsed._replace(
                 scheme=waha_parsed.scheme, netloc=waha_parsed.netloc))
+        # Anti-SSRF: hanya proxy URL yang menunjuk tepat ke host WAHA
+        if not _is_waha_url(fetch_url):
+            log.warning("Blocked non-WAHA media proxy URL: %s", (url or "")[:80])
+            raise HTTPException(status_code=400, detail="Invalid media URL")
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=True)
+            # follow_redirects=False — redirect ke host lain jangan diikuti (anti-SSRF)
+            resp = await client.get(fetch_url, headers=WAHA_HEADERS, follow_redirects=False)
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail="Media not found")
             media_type = resp.headers.get("content-type", "application/octet-stream")

@@ -12,7 +12,7 @@ services:
     container_name: moban-tracker
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # hanya localhost — akses publik lewat nginx (TLS)
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-postgres123}@db:5432/moban}
       - WAHA_URL=http://waha:3000
@@ -23,6 +23,7 @@ services:
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-WAHA}
       - LLM_BASE_URL=${LLM_BASE_URL:-https://9router.tefambo.site/v1}
       - BACKEND_API_KEY=${BACKEND_API_KEY:-}
+      - WAHA_WEBHOOK_SECRET=${WAHA_WEBHOOK_SECRET:-}
       - ACCESS_CODES=${ACCESS_CODES:-}
       - JWT_SECRET=${JWT_SECRET:-}
       - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-24}
