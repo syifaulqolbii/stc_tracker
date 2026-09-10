@@ -1529,3 +1529,176 @@ class TestReminder:
             assert response.status_code == 200
             data = response.json()
             assert data["ok"] is True
+
+
+class TestCasePreview:
+    """POST /api/cases/preview — render teks tanpa kirim & tanpa DB write."""
+
+    BODY = {
+        "jenis_case": "Non Order",
+        "fields": {"ticket_remedy": "INCPREV01", "detail_case": "uji preview"},
+    }
+
+    def test_preview_renders_text(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]  # jenis_case lookup di _render_case_payload
+        response = tc.post("/api/cases/preview", json=self.BODY)
+        assert response.status_code == 200
+        data = response.json()
+        assert "#Non Order" in data["text"]
+        assert "INCPREV01" in data["text"]
+        assert data["mentions"] == []
+
+    def test_preview_no_waha_call(self, client, mock_waha):
+        """Preview TIDAK boleh memanggil WAHA sama sekali."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]
+        response = tc.post("/api/cases/preview", json=self.BODY)
+        assert response.status_code == 200
+        mock_waha.post.assert_not_called()
+
+    def test_preview_no_insert(self, client):
+        """Preview hanya boleh SELECT — tidak ada INSERT/UPDATE ke mana pun."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]
+        tc.post("/api/cases/preview", json=self.BODY)
+        for call_args in mock_cursor.execute.call_args_list:
+            sql = call_args[0][0]
+            assert "INSERT INTO" not in sql.upper(), f"Preview melakukan write: {sql}"
+            assert "UPDATE " not in sql.upper()
+
+    def test_preview_with_custom_header_and_mentions(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]
+        response = tc.post("/api/cases/preview", json={
+            "jenis_case": "Non Order",
+            "mentions": [{"number": "6281234567890", "name": "Budi"}],
+            "custom_header": "Halo {phone} mohon bantuan",
+            "fields": {"ticket_remedy": "INCPREV02"},
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert "Halo @6281234567890 mohon bantuan" in data["text"]
+        assert data["mentions"] == [{"number": "6281234567890", "name": "Budi"}]
+
+    def test_preview_parity_with_create_case(self, client):
+        """Teks preview HARUS identik dengan teks create_case untuk input yang sama."""
+        tc, mock_cursor = client
+        seq = [{"id": 1}]  # jenis lookup (dipakai preview & create)
+        seq += [{"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}]  # _get_group
+        seq += [{"id": 42, "case_code": "INCPREV03"}, None]  # INSERT RETURNING + wa_messages
+        mock_cursor.fetchone.side_effect = seq
+
+        body = {
+            "group_id": 1,
+            "jenis_case": "Non Order",
+            "fields": {"ticket_remedy": "INCPREV03", "detail_case": "paritas"},
+        }
+        prev_resp = tc.post("/api/cases/preview", json=body)
+        assert prev_resp.status_code == 200
+        # create_case memakai sequence yang sama (jenis lookup dipanggil lagi dari awal)
+        mock_cursor.fetchone.side_effect = seq
+        create_resp = tc.post("/api/cases", json=body)
+        assert create_resp.status_code == 201
+        assert create_resp.json()["text"] == prev_resp.json()["text"]
+
+
+class TestCaseTestSend:
+    """POST /api/cases/test-send — kirim ke grup test tanpa membuat case."""
+
+    BODY = {
+        "jenis_case": "Non Order",
+        "fields": {"ticket_remedy": "INCTESTSEND", "detail_case": "uji test-send"},
+    }
+
+    def test_test_send_to_default_group(self, client, mock_waha):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 5, "name": "Test Development", "chat_id": "120363999@g.us",
+             "is_default": True},  # _get_default_group (dipanggil sebelum render)
+            {"id": 1},  # jenis lookup di _render_case_payload
+        ]
+        response = tc.post("/api/cases/test-send", json=self.BODY)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["test_group_id"] == 5
+        assert data["test_group_name"] == "Test Development"
+        assert "INCTESTSEND" in data["text"]
+        # WAHA dipanggil dengan chat_id grup test
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["chatId"] == "120363999@g.us"
+
+    def test_test_send_with_test_group_override(self, client, mock_waha):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 3, "name": "Grup Lain", "chat_id": "120363777@g.us"},  # _get_group(3)
+            {"id": 1},  # jenis lookup di _render_case_payload
+        ]
+        response = tc.post("/api/cases/test-send", json={**self.BODY, "test_group_id": 3})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["test_group_id"] == 3
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["chatId"] == "120363777@g.us"
+
+    def test_test_send_no_case_insert(self, client):
+        """Test-send TIDAK boleh menulis ke cases/wa_messages."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 5, "name": "Test Development", "chat_id": "120363999@g.us", "is_default": True},
+            {"id": 1},
+        ]
+        tc.post("/api/cases/test-send", json=self.BODY)
+        for call_args in mock_cursor.execute.call_args_list:
+            sql = call_args[0][0]
+            assert "INSERT INTO" not in sql.upper(), f"Test-send melakukan write: {sql}"
+
+    def test_test_send_no_default_group_returns_400(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            None,       # _get_default_group → tidak ada (validasi sebelum render)
+        ]
+        response = tc.post("/api/cases/test-send", json=self.BODY)
+        assert response.status_code == 400
+        assert "default" in response.json()["detail"]
+
+    def test_test_send_unknown_group_returns_422(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            None,       # _get_group(999) → tidak aktif
+            None,       # _get_group_any(999) → tidak ada barisnya
+        ]
+        response = tc.post("/api/cases/test-send", json={**self.BODY, "test_group_id": 999})
+        assert response.status_code == 422
+        assert "999" in response.json()["detail"]
+
+    def test_test_send_inactive_group_returns_409(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            None,       # _get_group(2) → tidak aktif
+            {"id": 2, "name": "Grup Nonaktif", "chat_id": "120363002@g.us"},  # _get_group_any
+        ]
+        response = tc.post("/api/cases/test-send", json={**self.BODY, "test_group_id": 2})
+        assert response.status_code == 409
+        assert "Grup Nonaktif" in response.json()["detail"]
+
+    def test_test_send_route_not_swallowed_by_case_id(self, client):
+        """Route ordering: /api/cases/test-send tidak boleh tertelan GET /api/cases/{case_id}.
+
+        (POST vs GET beda method, tapi guard ini memastikan route terdaftar benar.)
+        """
+        tc, _ = client
+        # Body kosong diterima (semua field opsional di CaseIn) → handler jalan;
+        # gagal di _get_default_group karena mock tanpa fetchone → kalau route
+        # tersamar ke /{case_id}, POST /api/cases/test-send tidak akan 200 di sini.
+        resp = tc.post("/api/cases/test-send", json={})
+        assert resp.status_code in (200, 400, 500)
+
+    def test_preview_route_not_swallowed(self, client):
+        """Route ordering: /api/cases/preview harus match endpoint preview, bukan /{case_id}."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]
+        resp = tc.post("/api/cases/preview", json=self.BODY)
+        assert resp.status_code == 200
+        assert "text" in resp.json()

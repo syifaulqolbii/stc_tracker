@@ -111,6 +111,26 @@ Content-Type: application/json
 
 ---
 
+### 3.1a `POST /api/cases/preview` — Preview teks case (tanpa kirim)
+
+Render teks case **persis seperti yang akan dikirim** ke grup WA — tanpa mengirim apa pun ke WhatsApp dan **tanpa membuat case** di database. Untuk ditampilkan di UI sebelum user menekan tombol kirim/test.
+
+- **Request body:** sama persis dengan `POST /api/cases` (semua field opsional, `group_id` diabaikan).
+- **Response `200`:** `{ "text": "...", "mentions": [{"number": "628...", "name": "..."}] }`
+- Teks yang di-preview **dijamin identik** dengan teks yang dikirim `POST /api/cases` untuk input yang sama.
+- Read-only: hanya SELECT nama area/regional, tidak ada write.
+
+### 3.1b `POST /api/cases/test-send` — Kirim case ke grup test (tanpa membuat case)
+
+Kirim teks case ke **grup default** (`is_default=true`, biasanya grup test development) supaya user bisa melihat hasilnya di WhatsApp **sebelum** case dikirim ke grup asli.
+
+- **Request body:** sama dengan `POST /api/cases`, plus field opsional:
+  - `test_group_id` (int, opsional) — override grup tujuan test. Kosongkan → pakai grup default. ID grup default bisa dilihat via `GET /api/groups?include_default=true`.
+- **Response `200`:** `{ "ok": true, "test_group_id": 1, "test_group_name": "Test Development", "wa_message_id": "...", "text": "..." }`
+- **TIDAK membuat row case** di database — tidak muncul di dashboard, tidak di-reminder, tidak di-track.
+- Error: grup test tidak ada → `422`; grup nonaktif → `409`; tidak ada grup default (dan `test_group_id` kosong) → `400`.
+- **Alur FE yang disarankan:** tombol **"Kirim Test"** → `POST /api/cases/test-send` → user cek grup test di WA → kalau oke, tombol **"Kirim"** → `POST /api/cases` (endpoint lama, membuat case sungguhan di grup asli).
+
 ### 3.2 `POST /api/cases` — Buat & kirim case ke grup WA
 
 > **Catatan (v1.10 — grup default):** `group_id` kini **opsional** (int) — ID grup WA tujuan dari `GET /api/groups`, dipakai **switcher grup** di frontend. Kalau user **tidak memilih** grup (field dikosongkan / tidak dikirim), case otomatis dikirim ke **grup default** (`wa_groups.is_default = true` — biasanya grup test development; **tidak muncul** di list switcher, lihat §6.1). Case tetap ter-track penuh di grup default itu. Kalau belum ada grup default → `400`.
@@ -1455,6 +1475,12 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.14 (10 September 2026) — fitur test-send case
+- **Endpoint baru `POST /api/cases/preview`**: render teks case tanpa kirim & tanpa membuat case. Body sama dengan `POST /api/cases`. Response `{text, mentions}`.
+- **Endpoint baru `POST /api/cases/test-send`**: kirim teks case ke grup default (atau `test_group_id` opsional) untuk dicek di WA sebelum kirim ke grup asli. **Tidak membuat row case** di DB. Response `{ok, test_group_id, test_group_name, wa_message_id, text}`.
+- `POST /api/cases` tidak berubah kontraknya (refactor internal saja — teks sekarang dirender via helper bersama yang dipakai ketiga endpoint, jadi preview/test/kirim selalu identik).
+- Alur FE: tombol test → `test-send`, tombol kirim → `POST /api/cases`.
 
 ### v1.13 (8 September 2026) — hardening keamanan pasca-audit produksi
 Perubahan keamanan dari hasil verifikasi produksi 8 Sep 2026 (lihat `docs/production-runbook.md`). **Tidak ada perubahan kontrak endpoint untuk frontend.**

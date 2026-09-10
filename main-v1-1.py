@@ -194,7 +194,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.11.0",
+    version="1.12.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -596,6 +596,45 @@ def _resolve_jenis_case_name(name: str | None) -> str:
     return LEGACY_CASE_TYPE_MAP.get(name, "non_order")
 
 
+def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
+    """Render teks case persis seperti yang dikirim create_case.
+
+    Dipakai bersama oleh POST /api/cases, /api/cases/preview, dan /api/cases/test-send
+    supaya teks yang di-preview/di-test DIJAMIN identik dengan yang dikirim ke grup asli.
+    Read-only (hanya SELECT nama area/regional) — tidak menulis ke DB.
+
+    Return: (text, jenis_key)
+    """
+    jenis_key = _resolve_jenis_case_name(inp.jenis_case)
+    f = inp.fields
+
+    # Resolve names for template rendering
+    area_name = None
+    regional_name = None
+    with db() as conn, conn.cursor() as cur:
+        if inp.area_id:
+            cur.execute("SELECT name FROM areas WHERE id = %s", (inp.area_id,))
+            row = cur.fetchone()
+            if row:
+                area_name = row["name"]
+        if inp.regional_id:
+            cur.execute("SELECT name FROM regionals WHERE id = %s", (inp.regional_id,))
+            row = cur.fetchone()
+            if row:
+                regional_name = row["name"]
+
+    header = render_header([m.model_dump() for m in inp.mentions], jenis_key, custom_header=inp.custom_header) if (inp.mentions or inp.custom_header) else ""
+    body_text = render_case_text(
+        jenis_key, f,
+        area_name=area_name,
+        regional_name=regional_name,
+        sumber_ticket=inp.sumber_ticket,
+        asal_grapari=inp.asal_grapari,
+    )
+    text = f"{header}\n\n{body_text}" if header else body_text
+    return text, jenis_key
+
+
 # ---------------------------------------------------------------- Group helpers
 
 def _get_group(group_id: int) -> dict | None:
@@ -892,6 +931,10 @@ class CaseIn(BaseModel):
     custom_header: str | None = Field(None, description="Custom header pesan. Kosongkan untuk default.")
     fields: dict = Field({}, description="Field case lama (semua opsional): ticket_remedy, no_indihome, detail_case, evidence, dll")
 
+class TestSendIn(CaseIn):
+    test_group_id: int | None = Field(None, ge=1, description="ID grup tujuan TEST (opsional). Kosongkan → kirim ke grup default (is_default). ID bisa dari GET /api/groups?include_default=true")
+
+
 class StatusIn(BaseModel):
     status: str = Field(..., description="Status baru: open, in_progress, done, issue")
     note: str | None = Field(None, description="Catatan opsional untuk update status")
@@ -990,8 +1033,6 @@ def login_with_access_code(inp: AccessCodeIn, request: Request,
 async def create_case(inp: CaseIn, request: Request,
                       _auth: str = Depends(verify_api_key),
                       _rate: None = Depends(check_rate_limit)):
-    # Resolve jenis_case name → internal key
-    jenis_key = _resolve_jenis_case_name(inp.jenis_case)
     jenis_case_id = _resolve_jenis_case(inp.jenis_case)
     sumber_ticket_id = _resolve_sumber_ticket(inp.sumber_ticket)
     if inp.group_id is not None:
@@ -1020,30 +1061,7 @@ async def create_case(inp: CaseIn, request: Request,
     f = inp.fields
     case_code = (f.get("ticket_remedy") or f.get("case_id") or "").strip().upper() or None
 
-    # Resolve names for template rendering
-    area_name = None
-    regional_name = None
-    with db() as conn, conn.cursor() as cur:
-        if inp.area_id:
-            cur.execute("SELECT name FROM areas WHERE id = %s", (inp.area_id,))
-            row = cur.fetchone()
-            if row:
-                area_name = row["name"]
-        if inp.regional_id:
-            cur.execute("SELECT name FROM regionals WHERE id = %s", (inp.regional_id,))
-            row = cur.fetchone()
-            if row:
-                regional_name = row["name"]
-
-    header = render_header([m.model_dump() for m in inp.mentions], jenis_key, custom_header=inp.custom_header) if (inp.mentions or inp.custom_header) else ""
-    body_text = render_case_text(
-        jenis_key, f,
-        area_name=area_name,
-        regional_name=regional_name,
-        sumber_ticket=inp.sumber_ticket,
-        asal_grapari=inp.asal_grapari,
-    )
-    text = f"{header}\n\n{body_text}" if header else body_text
+    text, jenis_key = _render_case_payload(inp)
 
     wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None,
                              chat_id=group["chat_id"])
@@ -1084,6 +1102,58 @@ async def create_case(inp: CaseIn, request: Request,
         conn.commit()
     return {"id": row["id"], "case_code": row["case_code"], "wa_message_id": wa_mid,
             "group_id": group["id"], "group_name": group["name"], "text": text}
+
+
+@app.post("/api/cases/preview", tags=["Cases"],
+          summary="Preview teks case (tanpa kirim)",
+          description="Render teks case persis seperti yang akan dikirim ke grup WA — tanpa mengirim apa pun dan tanpa membuat case. "
+                      "Untuk ditampilkan di frontend sebelum tombol kirim/test. Body sama dengan POST /api/cases.")
+def preview_case(inp: CaseIn,
+                 _auth: str = Depends(verify_api_key),
+                 _rate: None = Depends(check_rate_limit)):
+    text, _ = _render_case_payload(inp)
+    return {"text": text, "mentions": [{"number": m.number, "name": m.name} for m in inp.mentions]}
+
+
+@app.post("/api/cases/test-send", tags=["Cases"],
+          summary="Kirim case ke grup test (tanpa membuat case)",
+          description="Kirim teks case ke grup default (is_default, biasanya grup test development) untuk melihat hasilnya di WhatsApp "
+                      "SEBELUM case dikirim ke grup asli. TIDAK membuat row case di database — setelah oke, kirim case asli via POST /api/cases. "
+                      "Body sama dengan POST /api/cases, plus test_group_id opsional untuk override tujuan test.")
+async def test_send_case(inp: TestSendIn,
+                         _auth: str = Depends(verify_api_key),
+                         _rate: None = Depends(check_rate_limit)):
+    if inp.test_group_id is not None:
+        group = _get_group(inp.test_group_id)
+        if not group:
+            known = _get_group_any(inp.test_group_id)
+            if not known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"test_group_id {inp.test_group_id} tidak dikenal — pakai ID dari "
+                           f"GET /api/groups?include_default=true atau hilangkan field untuk mengirim ke grup default",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"grup test '{known['name']}' sedang dinonaktifkan admin — pilih grup lain "
+                       f"atau minta grup ini diaktifkan kembali",
+            )
+    else:
+        group = _get_default_group()
+        if not group:
+            raise HTTPException(
+                status_code=400,
+                detail='Belum ada grup default — set test_group_id, atau set via PUT /api/groups/{id} {"is_default": true}',
+            )
+
+    text, _ = _render_case_payload(inp)
+
+    wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None,
+                             chat_id=group["chat_id"])
+
+    log.info("TEST-SEND ke grup '%s' (%s) — tidak disimpan sebagai case", group["name"], group["chat_id"])
+    return {"ok": True, "test_group_id": group["id"], "test_group_name": group["name"],
+            "wa_message_id": wa_mid, "text": text}
 
 
 @app.get("/api/cases", tags=["Cases"],

@@ -382,3 +382,42 @@ curl -s -o /dev/null -w "%{http_code}\n" --max-time 5 http://43.157.212.98:8000/
 # WA masih masuk? (uji end-to-end setelah secret terpasang di WAHA)
 # kirim pesan di grup test, pastikan webhook tetap terproses → cek /api/cases ter-update
 ```
+---
+
+# 🧪 FITUR TEST-SEND CASE (v1.12, 10 September 2026)
+
+Flow baru: **preview → kirim ke grup test → kirim ke grup asli**, untuk menghindari case salah format masuk grup operasional.
+
+## Endpoint baru (ephemeral — TIDAK membuat row case di DB)
+
+| Endpoint | Fungsi |
+|---|---|
+| `POST /api/cases/preview` | Render teks case tanpa kirim & tanpa write DB. Body = sama dengan `POST /api/cases`. Response `{text, mentions}` |
+| `POST /api/cases/test-send` | Kirim teks case ke grup default (`is_default`, grup Test Development). Body = sama + `test_group_id` opsional. Response `{ok, test_group_id, test_group_name, wa_message_id, text}` |
+
+- Refactor: teks dirender via helper bersama `_render_case_payload()` — preview/test/kirim **dijamin identik**.
+- Tidak ada migrasi DB. Test-send tidak memicu reminder/webhook tracking.
+- Deploy biasa saja: `git pull && docker compose build app && docker compose up -d app`.
+
+## Checklist re-verify pasca-deploy
+
+```bash
+API=https://api.stc.it-jaya.id
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. Preview — render saja, tanpa kirim:
+curl -s -X POST $API/api/cases/preview -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Non Order","fields":{"ticket_remedy":"INCTESTPREV","no_indihome":"0211234567"}}'
+# → {"text":"#Non Order\nTicket Remedy : INCTESTPREV\n...","mentions":[]}
+
+# 2. Test-send — kirim ke grup test (Test Development), CEK WA GRUP TEST:
+curl -s -X POST $API/api/cases/test-send -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Non Order","fields":{"ticket_remedy":"INCTESTSEND01","no_indihome":"0211234567"}}'
+# → {"ok":true,"test_group_id":1,"test_group_name":"Test Development",...}
+
+# 3. Pastikan TIDAK ada case baru terbentuk:
+curl -s -H "X-API-Key: $KEY" "$API/api/cases?q=INCTESTSEND01"
+# → []   (ephemeral — benar)
+
+# 4. Kirim case asli via POST /api/cases seperti biasa — teks harus identik dengan test-send.
+```
