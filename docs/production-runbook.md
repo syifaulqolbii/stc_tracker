@@ -255,7 +255,7 @@ crontab -l | grep -i backup
 
 # 📋 HASIL VERIFIKASI (8 September 2026) — SELESAI
 
-Server: `api.stc.it-jaya.id` (VPS 43.157.212.98) · Commit ter-deploy: `108129a`
+Server: `api.stc.syfa.site` (VPS 43.157.212.98) · Commit ter-deploy: `108129a`
 
 ## ✅ Yang terbukti JALAN di produksi
 - Health (db + waha), TLS via nginx, log bersih tanpa traceback
@@ -290,7 +290,7 @@ Server: `api.stc.it-jaya.id` (VPS 43.157.212.98) · Commit ter-deploy: `108129a`
    → Fix: docker-compose `"8000:8000"` → `"127.0.0.1:8000:8000"`, lalu `up -d app`.
 7. **Cron auto-reminder tidak terpasang** — fitur sundul otomatis tidak pernah jalan.
    → Fix: tambah crontab, mis. `*/30 * * * * curl -s -X POST -H "X-API-Key: $KEY" \
-   https://api.stc.it-jaya.id/api/reminders/run?hours=2`.
+   https://api.stc.syfa.site/api/reminders/run?hours=2`.
 
 ## ⚠️ Kosmetik / low priority
 - Nginx healthcheck salah target (`wget localhost:80` refused) — traffic nyata sehat.
@@ -348,13 +348,13 @@ docker compose build app && docker compose up -d app
 echo "WAHA_WEBHOOK_SECRET=$(openssl rand -hex 24)" >> .env
 docker compose up -d app   # setelah env di-load ulang
 # 4. Di dashboard/konfig WAHA: set webhook URL menjadi
-#    https://api.stc.it-jaya.id/webhooks/waha?token=<ISI_SECRET>
+#    https://api.stc.syfa.site/webhooks/waha?token=<ISI_SECRET>
 # 5. (opsional, cron auto-reminder — ON HOLD)
 ```
 
 ## Checklist re-verify pasca-deploy
 ```bash
-API=https://api.stc.it-jaya.id
+API=https://api.stc.syfa.site
 KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
 
 # #1 v1.11 naik: switcher tidak lagi menampilkan grup nonaktif
@@ -402,7 +402,7 @@ Flow baru: **preview → kirim ke grup test → kirim ke grup asli**, untuk meng
 ## Checklist re-verify pasca-deploy
 
 ```bash
-API=https://api.stc.it-jaya.id
+API=https://api.stc.syfa.site
 KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
 
 # 1. Preview — render saja, tanpa kirim:

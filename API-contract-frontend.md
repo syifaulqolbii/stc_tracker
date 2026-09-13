@@ -11,7 +11,7 @@
 
 | Item | Nilai |
 |---|---| 
-| Base URL (prod) | `https://api.stc.it-jaya.id` (via nginx + SSL) |
+| Base URL (prod) | `https://api.stc.syfa.site` (via nginx + SSL) |
 | Format | JSON, `Content-Type: application/json` |
 | Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health`, `/webhooks/waha`, dan `/api/auth/access-code` |
 | Encoding waktu | ISO 8601 dengan timezone (TIMESTAMPTZ), contoh `2026-08-20T16:20:11.345+07:00` |
@@ -447,7 +447,7 @@ Cara render timeline:
 - `updates[].source` menjelaskan bagaimana update tertangkap:
   - `reply` = langsung reply ke pesan root bot
   - `chain` = reply ke pesan orang lain (eskalasi) — layak diberi ikon khusus
-- `media_url` berisi URL media yang bisa diakses browser. Format: `https://api.stc.it-jaya.id/api/media/file/{uuid}.jpg`. Kalau `null`, tidak ada media. Render sebagai gambar/video inline di timeline. Untuk media lama (sebelum v1.6.1), masih pakai format proxy URL.
+- `media_url` berisi URL media yang bisa diakses browser. Format: `https://api.stc.syfa.site/api/media/file/{uuid}.jpg`. Kalau `null`, tidak ada media. Render sebagai gambar/video inline di timeline. Untuk media lama (sebelum v1.6.1), masih pakai format proxy URL.
 - `media_type` = MIME type media (contoh: `image/jpeg`, `video/mp4`). Gunakan untuk menentukan render: `image/*` → `<img>`, `video/*` → `<video>`, lainnya → link download.
 - `author` berformat `xxx@lid` (WhatsApp LID). `author_name` adalah nama kontak yang di-resolve otomatis dari phone book via WAHA API.
 
@@ -932,7 +932,7 @@ GET /api/media/file/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg
 1. Solver kirim image + caption di grup WA
 2. WAHA kirim webhook → POST /webhooks/waha
 3. Backend download dari WAHA → simpan ke /app/media/{uuid}.jpg
-4. Simpan media_url: https://api.stc.it-jaya.id/api/media/file/{uuid}.jpg
+4. Simpan media_url: https://api.stc.syfa.site/api/media/file/{uuid}.jpg
 5. Frontend render: <img src="{media_url}">
 ```
 
@@ -1527,7 +1527,7 @@ Penyebab: frontend mengirim `group_id` grup yang sedang di-inaktifkan admin → 
 ### v1.7 (2 September 2026)
 - **Access Code Auth**: Endpoint baru `POST /api/auth/access-code` untuk login dengan kode akses. Return JWT token untuk akses frontend. Access codes di-config via env var `ACCESS_CODES` (comma-separated). JWT expiry via `JWT_EXPIRY_HOURS` (default 24 jam).
 - **Frontend gate**: Frontend harus login dulu sebelum bisa akses dashboard. API key auth tetap berjalan untuk backend API.
-- **Nginx update**: Frontend dihapus dari VPS (sudah deploy di tempat lain). Semua request ke `api.stc.it-jaya.id` langsung ke backend.
+- **Nginx update**: Frontend dihapus dari VPS (sudah deploy di tempat lain). Semua request ke `api.stc.syfa.site` langsung ke backend.
 - **Delete case (soft delete)**: Endpoint baru `DELETE /api/cases/{id}` untuk soft delete case. Case ditandai dengan `deleted_at` timestamp. Query `GET /api/cases` default hanya menampilkan case aktif (belum di-delete). Gunakan `?include_deleted=true` untuk melihat semua case.
 
 ### v1.6 (27 Agustus 2026)
