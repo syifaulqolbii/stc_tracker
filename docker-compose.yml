@@ -88,6 +88,25 @@ services:
     networks:
       - moban-net
 
+  # Reverse proxy + TLS (Let's Encrypt) — dipindah dari project lama ~/frontend
+  # Config di-mount per-FOLDER (bukan per-file) supaya edit config langsung terlihat
+  # tanpa perlu recreate container (file-mount tunggal bisa "putus" inode).
+  nginx:
+    image: nginx:alpine
+    container_name: moban-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ${NGINX_CERTS_DIR:-./nginx/certs}:/etc/letsencrypt:ro
+      - ${NGINX_CERTBOT_WWW_DIR:-./nginx/certbot-www}:/var/www/certbot
+    depends_on:
+      - app
+    networks:
+      - moban-net
+
 volumes:
   postgres_data:
     driver: local
