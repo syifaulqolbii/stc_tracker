@@ -18,6 +18,7 @@ REQUIRED_FIELDS: dict[str, set[str]] = {
 CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
     "non_order": [
         ("ticket_remedy", "Ticket Remedy"),
+        ("case_id", "Case ID"),
         ("no_indihome", "Nomer Indihome"),
         ("request_case", "Request Case"),
         ("detail_case", "Detail Case"),
@@ -25,6 +26,7 @@ CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
     ],
     "non_ao": [
         ("ticket_remedy", "Ticket Remedy"),
+        ("case_id", "Case ID"),
         ("order_id", "Order ID"),
         ("no_indihome", "Nomer Indihome"),
         ("last_milestone", "Last Milestone"),
@@ -34,6 +36,7 @@ CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
     ],
     "mobile": [
         ("ticket_remedy", "Ticket Remedy"),
+        ("case_id", "Case ID"),
         ("msisdn", "MSISDN"),
         ("request_case", "Request Case"),
         ("detail_case", "Detail Case"),

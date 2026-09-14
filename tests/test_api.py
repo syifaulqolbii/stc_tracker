@@ -191,7 +191,7 @@ class TestCreateCase:
             "group_id": 1,
             "jenis_case": "Non AO",
             "fields": {
-                "ticket_remedy": "INC999",
+                "ticket_remedy": "INC000000999",
                 "detail_case": "Non AO test",
             },
         })
@@ -230,7 +230,7 @@ class TestCreateCase:
         response = tc.post("/api/cases", json={
             "group_id": 1,
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"ticket_remedy": "INC000000123"},
         })
         assert response.status_code == 201
         data = response.json()
@@ -266,7 +266,7 @@ class TestCreateCase:
         response = tc.post("/api/cases", json={
             "group_id": 1,
             "case_type": "stc",  # legacy field
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"ticket_remedy": "INC000000123"},
         })
         assert response.status_code == 201
         data = response.json()
@@ -316,7 +316,7 @@ class TestCreateCase:
         response = tc.post("/api/cases", json={
             "group_id": 999,
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"ticket_remedy": "INC000000123"},
         })
         assert response.status_code == 422
         detail = str(response.json()["detail"])
@@ -335,7 +335,7 @@ class TestCreateCase:
         response = tc.post("/api/cases", json={
             "group_id": 2,
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"ticket_remedy": "INC000000123"},
         })
         assert response.status_code == 409
         detail = str(response.json()["detail"])
@@ -349,7 +349,7 @@ class TestCreateCase:
         response = tc.post("/api/cases", json={
             "group_id": bad,
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INC123"},
+            "fields": {"ticket_remedy": "INC000000123"},
         })
         assert response.status_code == 422
         assert "greater than or equal to 1" in str(response.json()["detail"])
@@ -1536,7 +1536,7 @@ class TestCasePreview:
 
     BODY = {
         "jenis_case": "Non Order",
-        "fields": {"ticket_remedy": "INCPREV01", "detail_case": "uji preview"},
+        "fields": {"ticket_remedy": "INC111111001", "detail_case": "uji preview"},
     }
 
     def test_preview_renders_text(self, client):
@@ -1546,7 +1546,7 @@ class TestCasePreview:
         assert response.status_code == 200
         data = response.json()
         assert "#Non Order" in data["text"]
-        assert "INCPREV01" in data["text"]
+        assert "INC111111001" in data["text"]
         assert data["mentions"] == []
 
     def test_preview_no_waha_call(self, client, mock_waha):
@@ -1574,7 +1574,7 @@ class TestCasePreview:
             "jenis_case": "Non Order",
             "mentions": [{"number": "6281234567890", "name": "Budi"}],
             "custom_header": "Halo {phone} mohon bantuan",
-            "fields": {"ticket_remedy": "INCPREV02"},
+            "fields": {"ticket_remedy": "INC111111002"},
         })
         assert response.status_code == 200
         data = response.json()
@@ -1592,7 +1592,7 @@ class TestCasePreview:
         body = {
             "group_id": 1,
             "jenis_case": "Non Order",
-            "fields": {"ticket_remedy": "INCPREV03", "detail_case": "paritas"},
+            "fields": {"ticket_remedy": "INC111111003", "detail_case": "paritas"},
         }
         prev_resp = tc.post("/api/cases/preview", json=body)
         assert prev_resp.status_code == 200
@@ -1608,7 +1608,7 @@ class TestCaseTestSend:
 
     BODY = {
         "jenis_case": "Non Order",
-        "fields": {"ticket_remedy": "INCTESTSEND", "detail_case": "uji test-send"},
+        "fields": {"ticket_remedy": "INC111111004", "detail_case": "uji test-send"},
     }
 
     def test_test_send_to_default_group(self, client, mock_waha):
@@ -1624,7 +1624,7 @@ class TestCaseTestSend:
         assert data["ok"] is True
         assert data["test_group_id"] == 5
         assert data["test_group_name"] == "Test Development"
-        assert "INCTESTSEND" in data["text"]
+        assert "INC111111004" in data["text"]
         # WAHA dipanggil dengan chat_id grup test
         payload = mock_waha.post.call_args[1]["json"]
         assert payload["chatId"] == "120363999@g.us"
@@ -1932,3 +1932,60 @@ class TestMentionRewrite:
                 assert insert_calls[0].args[1][3] == "done INC012392211 @Furqon Nugroho"
         finally:
             main_module._contact_cache.clear()
+
+
+class TestTicketRemedyValidation:
+    """v1.14 — fields.ticket_remedy wajib format INC; kode non-INC harus
+    dikirim sebagai fields.case_id."""
+
+    def test_non_inc_ticket_remedy_rejected_422(self, mock_waha):
+        tc = TestClient(main_module.app)
+        r = tc.post("/api/cases", json={
+            "jenis_case": "Mobile",
+            "fields": {"ticket_remedy": "REQ-9981", "msisdn": "0812"},
+        })
+        assert r.status_code == 422
+        assert "INC" in str(r.json())
+
+    def test_lowercase_inc_accepted_and_uppercased(self, mock_waha):
+        """inc012345678 (lowercase) valid — backend sudah uppercase-kan."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # jenis lookup di render
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # group default
+            {"id": 10, "case_code": "INC012345678"},  # INSERT RETURNING
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            r = tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "jenis_case": "Mobile",
+                "fields": {"ticket_remedy": "inc012345678", "msisdn": "0812"},
+            })
+            assert r.status_code == 201
+            assert r.json()["case_code"] == "INC012345678"
+
+    def test_case_id_still_accepted(self, mock_waha):
+        """fields.case_id tetap diterima — jadi case_code via fallback."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            {"id": 11, "case_code": "REQ-9981"},
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "jenis_case": "Mobile",
+                "fields": {"case_id": "req-9981", "msisdn": "0812"},
+            })
+            assert r.status_code == 201
+            assert r.json()["case_code"] == "REQ-9981"
+
+    def test_validation_applies_to_preview_and_test_send(self, client):
+        """Validator CaseIn juga berlaku di /preview dan /test-send (warisan)."""
+        tc, _ = client
+        body = {"jenis_case": "Mobile", "fields": {"ticket_remedy": "ABC123"}}
+        r1 = tc.post("/api/cases/preview", json=body)
+        r2 = tc.post("/api/cases/test-send", json=body)
+        assert r1.status_code == 422
+        assert r2.status_code == 422

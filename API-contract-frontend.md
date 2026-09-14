@@ -1476,6 +1476,13 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.16 (14 September 2026) — ticket_remedy wajib format INC + field case_id
+⚠️ **BREAKING untuk FE** (hanya jika selama ini mengirim kode non-INC di `ticket_remedy`):
+- **`fields.ticket_remedy` kini divalidasi wajib format `INC<9+ digit>`** (contoh: `INC012345678`). Kode lain → `422` dengan pesan: "fields.ticket_remedy harus format INC... kirim sebagai fields.case_id".
+- **`fields.case_id` kini dirender ke pesan WA** dengan label sendiri: baris `Case ID : <kode>` (posisi tepat setelah Ticket Remedy). Sebelumnya key ini hanya jadi `case_code` di DB tanpa tampil di pesan.
+- Konvensi yang benar: kode tiket Remedy → `ticket_remedy`; kode internal/non-INC → `case_id`. Keduanya bisa dikirim sekaligus (case_code prioritas ticket_remedy).
+- `case_code` di DB tetap otomatis: dari `ticket_remedy` atau fallback `case_id` (di-uppercase).
+
 ### v1.15 (14 September 2026) — fix reply-chain reminder + mention rewrite
 Perbaikan dari temuan tracing case #15 (lihat `docs/findings-2026-09-14-case-15.md`). **Tidak ada perubahan kontrak endpoint untuk frontend**, tapi respons jadi lebih informatif:
 - **Reply ke pesan reminder kini terdeteksi** (sebelumnya hilang diam-diam): pesan reminder (manual & cron) sekarang disimpan ke `wa_messages` dengan `quoted_id` → pesan root case, sehingga solver yang me-reply pesan reminder "mohon di-follow up ya..." tetap terekam sebagai `progress_updates` (source: `chain`). Sebelumnya hanya reply ke pesan root yang terdeteksi.

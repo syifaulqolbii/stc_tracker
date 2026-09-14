@@ -314,36 +314,36 @@ def test_render_case_text_evidence_with_empty_strings():
 
 
 def test_case_fields_non_order_count():
-    """Non Order should have exactly 5 fields."""
-    assert len(CASE_FIELDS["non_order"]) == 5
+    """Non Order should have exactly 6 fields (case_id added v1.14)."""
+    assert len(CASE_FIELDS["non_order"]) == 6
 
 
 def test_case_fields_non_ao_count():
-    """Non AO should have exactly 7 fields."""
-    assert len(CASE_FIELDS["non_ao"]) == 7
+    """Non AO should have exactly 8 fields (case_id added v1.14)."""
+    assert len(CASE_FIELDS["non_ao"]) == 8
 
 
 def test_case_fields_mobile_count():
-    """Mobile should have exactly 5 fields."""
-    assert len(CASE_FIELDS["mobile"]) == 5
+    """Mobile should have exactly 6 fields (case_id added v1.14)."""
+    assert len(CASE_FIELDS["mobile"]) == 6
 
 
 def test_case_fields_field_keys_non_order():
     """Non Order field keys should match expected list."""
     keys = [k for k, _ in CASE_FIELDS["non_order"]]
-    assert keys == ["ticket_remedy", "no_indihome", "request_case", "detail_case", "link_evidence"]
+    assert keys == ["ticket_remedy", "case_id", "no_indihome", "request_case", "detail_case", "link_evidence"]
 
 
 def test_case_fields_field_keys_non_ao():
     """Non AO field keys should match expected list."""
     keys = [k for k, _ in CASE_FIELDS["non_ao"]]
-    assert keys == ["ticket_remedy", "order_id", "no_indihome", "last_milestone", "request_case", "detail_case", "link_evidence"]
+    assert keys == ["ticket_remedy", "case_id", "order_id", "no_indihome", "last_milestone", "request_case", "detail_case", "link_evidence"]
 
 
 def test_case_fields_field_keys_mobile():
     """Mobile field keys should match expected list."""
     keys = [k for k, _ in CASE_FIELDS["mobile"]]
-    assert keys == ["ticket_remedy", "msisdn", "request_case", "detail_case", "link_evidence"]
+    assert keys == ["ticket_remedy", "case_id", "msisdn", "request_case", "detail_case", "link_evidence"]
 
 
 def test_required_fields_non_order():
@@ -386,3 +386,26 @@ def test_render_reminder_text_custom():
     custom = "tolong segera di-follow up ya!"
     result = render_reminder_text(custom)
     assert result == custom
+
+
+# ======================================================================
+# v1.14 — ticket_remedy format validation + case_id rendering
+# ======================================================================
+
+def test_case_id_renders_with_own_label():
+    """Kode non-INC dikirim sebagai fields.case_id → tampil 'Case ID : ...'."""
+    text = render_case_text("mobile", {"case_id": "REQ-9981", "detail_case": "tes"})
+    assert "Case ID : REQ-9981" in text
+    assert "Ticket Remedy" not in text
+
+
+def test_ticket_remedy_and_case_id_both_render_in_order():
+    text = render_case_text("non_order", {
+        "ticket_remedy": "INC012345678",
+        "case_id": "REQ-77",
+        "detail_case": "tes",
+    })
+    lines = text.split("\n")
+    assert "Ticket Remedy : INC012345678" in lines
+    assert "Case ID : REQ-77" in lines
+    assert lines.index("Ticket Remedy : INC012345678") < lines.index("Case ID : REQ-77")

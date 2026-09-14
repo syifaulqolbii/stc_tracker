@@ -459,3 +459,36 @@ docker exec moban-db psql -U postgres -d moban -c \
 ```
 
 Catatan: pesan reminder LAMA (sebelum deploy) tetap tidak bisa di-chain — hanya yang baru.
+
+---
+
+# 🏷️ VALIDASI TICKET_REMEDY + FIELD CASE_ID (v1.14.0, 14 Sep 2026)
+
+Aturan baru di `POST /api/cases`, `/preview`, `/test-send`:
+
+| Field | Isi | Contoh | Efek di pesan WA |
+|---|---|---|---|
+| `fields.ticket_remedy` | **HANYA** kode tiket Remedy, format `INC<9+ digit>` | `INC012345678` | `Ticket Remedy : INC012345678` |
+| `fields.case_id` | Kode internal / non-INC | `REQ-9981` | `Case ID : REQ-9981` (baris baru, setelah Ticket Remedy) |
+
+- Kirim non-INC di `ticket_remedy` → **422**: "fields.ticket_remedy harus format INC... kirim sebagai fields.case_id"
+- `case_code` di DB tetap otomatis: `ticket_remedy` dulu, fallback `case_id` (di-uppercase)
+- Keduanya boleh dikirim sekaligus; kedua baris tampil di WA
+
+## Re-verify pasca-deploy
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. Non-INC di ticket_remedy harus ditolak:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $API/api/cases \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Mobile","fields":{"ticket_remedy":"REQ-9981"}}'
+# → 422
+
+# 2. case_id non-INC diterima & tampil dengan label Case ID:
+curl -s -X POST $API/api/cases/preview -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Mobile","fields":{"case_id":"REQ-9981","msisdn":"0812"}}'
+# → text berisi "Case ID : REQ-9981", TANPA baris "Ticket Remedy"
+```

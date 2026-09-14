@@ -37,7 +37,7 @@ from starlette.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from psycopg.rows import dict_row
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from templates import (
     CASE_TYPES, LEGACY_CASE_TYPE_MAP,
@@ -194,7 +194,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.13.0",
+    version="1.14.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -964,7 +964,24 @@ class CaseIn(BaseModel):
     asal_grapari: str | None = Field(None, description="Asal GraPARI (hanya jika Sumber Ticket = Grapari). Free text.")
     mentions: list[Mention] = Field([], description="Daftar kontak solver yang akan di-mention di grup WA")
     custom_header: str | None = Field(None, description="Custom header pesan. Kosongkan untuk default.")
-    fields: dict = Field({}, description="Field case lama (semua opsional): ticket_remedy, no_indihome, detail_case, evidence, dll")
+    fields: dict = Field({}, description="Field case (semua opsional): ticket_remedy, no_indihome, detail_case, case_id, evidence, dll")
+
+    @field_validator("fields")
+    @classmethod
+    def validate_ticket_remedy_format(cls, v: dict) -> dict:
+        """ticket_remedy KHUSUS kode tiket Remedy (format INC). Kode non-INC
+        (mis. case id internal) wajib dikirim sebagai fields.case_id — bukan
+        ditempel di ticket_remedy — supaya baris pesan WA tampil dengan label
+        yang benar ("Case ID : ...", bukan "Ticket Remedy : ...")."""
+        tr = v.get("ticket_remedy")
+        if tr is not None:
+            s = str(tr).strip()
+            if s and not re.fullmatch(r"INC\d{9,}", s, re.I):
+                raise ValueError(
+                    "fields.ticket_remedy harus format INC (contoh: INC012345678). "
+                    "Kode non-INC kirim sebagai fields.case_id"
+                )
+        return v
 
 class TestSendIn(CaseIn):
     test_group_id: int | None = Field(None, ge=1, description="ID grup tujuan TEST (opsional). Kosongkan → kirim ke grup default (is_default). ID bisa dari GET /api/groups?include_default=true")
