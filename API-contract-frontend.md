@@ -1476,6 +1476,11 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.15 (14 September 2026) — fix reply-chain reminder + mention rewrite
+Perbaikan dari temuan tracing case #15 (lihat `docs/findings-2026-09-14-case-15.md`). **Tidak ada perubahan kontrak endpoint untuk frontend**, tapi respons jadi lebih informatif:
+- **Reply ke pesan reminder kini terdeteksi** (sebelumnya hilang diam-diam): pesan reminder (manual & cron) sekarang disimpan ke `wa_messages` dengan `quoted_id` → pesan root case, sehingga solver yang me-reply pesan reminder "mohon di-follow up ya..." tetap terekam sebagai `progress_updates` (source: `chain`). Sebelumnya hanya reply ke pesan root yang terdeteksi.
+- **Mention solver tampil sebagai nama**: token mention mentah WAHA (`@71782207893754` — LID internal WhatsApp) di `progress_updates` kini di-rewrite menjadi nama kontak dari contact cache (mis. `@Furqon Nugroho`), fallback ke token asli kalau kontak tidak dikenal. `messages[].body` di `GET /api/cases/{id}` tetap menyimpan body mentah dari WAHA.
+
 ### v1.14 (10 September 2026) — fitur test-send case
 - **Endpoint baru `POST /api/cases/preview`**: render teks case tanpa kirim & tanpa membuat case. Body sama dengan `POST /api/cases`. Response `{text, mentions}`.
 - **Endpoint baru `POST /api/cases/test-send`**: kirim teks case ke grup default (atau `test_group_id` opsional) untuk dicek di WA sebelum kirim ke grup asli. **Tidak membuat row case** di DB. Response `{ok, test_group_id, test_group_name, wa_message_id, text}`.

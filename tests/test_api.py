@@ -1702,3 +1702,195 @@ class TestCaseTestSend:
         resp = tc.post("/api/cases/preview", json=self.BODY)
         assert resp.status_code == 200
         assert "text" in resp.json()
+
+
+# ======================================================================
+# v1.15 — Fix findings case-15: reminder reply-chain + mention rewrite
+# ======================================================================
+
+class TestReminderStoredInWaMessages:
+    """Fix case-15 #1: pesan reminder harus di-INSERT ke wa_messages dengan
+    quoted_id → pesan root, supaya reply solver ke reminder terdeteksi
+    find_case_by_chain (source 'chain')."""
+
+    def test_manual_reminder_inserts_wa_message(self, mock_waha):
+        """Manual reminder: harus ada INSERT ke wa_messages (quoted_id=root)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            None,  # UPDATE reminder_count
+            None,  # INSERT reminder_log
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases/6/reminder", json={})
+            assert r.status_code == 200
+            executed = " ".join(str(c.args[0]) for c in mock_cursor.execute.call_args_list)
+            assert "INSERT INTO wa_messages" in executed
+            # cari INSERT wa_messages dan pastikan paramsnya: (mid, root, msg)
+            for c in mock_cursor.execute.call_args_list:
+                if "INSERT INTO wa_messages" in str(c.args[0]):
+                    assert c.args[1] == ("test_msg_123", "case_mid_123",
+                                         "mohon di-follow up ya, case ini belum ada respon 🙏")
+
+    def test_manual_reminder_skips_insert_when_no_mid(self, mock_waha):
+        """Kalau WAHA tidak mengembalikan message id, tidak boleh INSERT wa_messages."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}  # tanpa id
+        mock_response.raise_for_status = MagicMock()
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            None, None,
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module.httpx, "AsyncClient") as mock_client, \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            async_client = AsyncMock()
+            async_client.post.return_value = mock_response
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases/6/reminder", json={})
+            assert r.status_code == 200
+            executed = " ".join(str(c.args[0]) for c in mock_cursor.execute.call_args_list)
+            assert "INSERT INTO wa_messages" not in executed
+
+    def test_cron_reminder_inserts_wa_message(self, mock_waha):
+        """Auto-reminder cron: juga harus simpan ke wa_messages (fix sama)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            None,  # UPDATE
+            None,  # INSERT reminder_log
+        ])
+        mock_cursor.fetchall.return_value = [
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+        ]
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/reminders/run?hours=0")
+            assert r.status_code == 200
+            assert r.json()["reminded"] == 1
+            executed = " ".join(str(c.args[0]) for c in mock_cursor.execute.call_args_list)
+            assert "INSERT INTO wa_messages" in executed
+
+    def test_chain_finds_case_via_stored_reminder(self):
+        """End-to-end chain logic: dengan row reminder di wa_messages
+        (quoted_id → root), find_case_by_chain harus menemukan case via chain."""
+        root_msg = {"wa_message_id": "root_mid", "quoted_id": None, "case_id": 15}
+        reminder_msg = {"wa_message_id": "reminder_mid", "quoted_id": "root_mid", "case_id": None}
+        case_row = {"id": 15, "case_code": "INC01239221", "group_id": 1, "deleted_at": None}
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        msg_by_id = {"root_mid": root_msg, "reminder_mid": reminder_msg}
+        msgs_seen = []
+
+        def exec_side_effect(sql, params=None):
+            sql_l = sql.lower()
+            if "from cases where (wa_message_id" in sql_l:
+                mock_cursor.fetchone.return_value = None
+            elif "from wa_messages where wa_message_id" in sql_l:
+                msgs_seen.append(params[0])
+                mock_cursor.fetchone.return_value = msg_by_id.get(params[0])
+            elif "from cases where id =" in sql_l:
+                mock_cursor.fetchone.return_value = case_row
+            else:
+                mock_cursor.fetchone.return_value = None
+
+        mock_cursor.execute.side_effect = exec_side_effect
+        with patch.object(main_module, "db", return_value=mock_conn):
+            case, source = main_module.find_case_by_chain("reminder_mid")
+        assert case is not None
+        assert case["id"] == 15
+        assert source == "chain"
+
+
+class TestMentionRewrite:
+    """Fix case-15 #2: token mention @<lid|number> di body di-rewrite jadi nama
+    kontak untuk parsing/progress_updates; wa_messages tetap simpan body mentah."""
+
+    def test_rewrite_uses_contact_cache(self):
+        main_module._contact_cache.clear()
+        main_module._contact_cache["71782207893754@lid"] = "Furqon Nugroho"
+        try:
+            body = "Baik rekan, mohon dibantu @71782207893754"
+            out = main_module.rewrite_mentions(body)
+            assert out == "Baik rekan, mohon dibantu @Furqon Nugroho"
+        finally:
+            main_module._contact_cache.clear()
+
+    def test_rewrite_fallback_keeps_raw_token(self):
+        main_module._contact_cache.clear()
+        try:
+            body = "cek @99999999999 dulu"
+            assert main_module.rewrite_mentions(body) == "cek @99999999999 dulu"
+        finally:
+            main_module._contact_cache.clear()
+
+    def test_rewrite_without_at_is_noop(self):
+        assert main_module.rewrite_mentions("tanpa mention") == "tanpa mention"
+        assert main_module.rewrite_mentions(None) is None
+
+    def test_rewrite_never_raises_on_weird_input(self):
+        main_module._contact_cache.clear()
+        main_module._contact_cache["1234567890@lid"] = "Ok"
+        try:
+            assert main_module.rewrite_mentions("") == ""
+            assert main_module.rewrite_mentions("@") == "@"
+            assert main_module.rewrite_mentions("@12 @345") == "@12 @345"  # < 5 digit, tidak di-rewrite
+        finally:
+            main_module._contact_cache.clear()
+
+    def test_webhook_stores_raw_body_and_progress_gets_display(self, mock_waha):
+        """handle_message: wa_messages dapat body MENTAH; progress_updates dapat
+        body hasil rewrite (mention jadi nama)."""
+        raw_body = "done INC012392211 @71782207893754"
+        main_module._contact_cache.clear()
+        main_module._contact_cache["71782207893754@lid"] = "Furqon Nugroho"
+        try:
+            mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+                {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group_by_chat
+                {"id": 15, "case_code": "INC012392211", "group_id": 1, "status": "open",
+                 "deleted_at": None},  # find_case_by_code
+                None,  # UPDATE wa_messages SET case_id
+                None,  # INSERT progress_updates
+                None,  # UPDATE cases SET status
+            ])
+            stored = {}
+            with patch.object(main_module, "db", return_value=mock_conn), \
+                 patch.object(main_module, "WAHA_WEBHOOK_SECRET", "testsecret"), \
+                 patch.object(main_module, "store_message",
+                              side_effect=lambda mid, q, a, b, **kw: stored.update({"body": b})), \
+                 patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+                 patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None):
+                tc = TestClient(main_module.app)
+                r = tc.post("/webhooks/waha", headers={"X-Webhook-Secret": "testsecret"},
+                            json={"event": "message", "payload": {
+                                "id": {"_serialized": "solver_mid_1"},
+                                "from": "120363xxx@g.us",
+                                "participant": "29321792118900@lid",
+                                "body": raw_body,
+                                "fromMe": False,
+                            }})
+                assert r.status_code == 200
+                # wa_messages → body MENTAH
+                assert stored["body"] == raw_body
+                # progress_updates → body hasil rewrite (mention jadi nama)
+                insert_calls = [c for c in mock_cursor.execute.call_args_list
+                                if "INSERT INTO progress_updates" in str(c.args[0])]
+                assert insert_calls, "progress_updates harus di-INSERT"
+                assert insert_calls[0].args[1][3] == "done INC012392211 @Furqon Nugroho"
+        finally:
+            main_module._contact_cache.clear()

@@ -421,3 +421,41 @@ curl -s -H "X-API-Key: $KEY" "$API/api/cases?q=INCTESTSEND01"
 
 # 4. Kirim case asli via POST /api/cases seperti biasa — teks harus identik dengan test-send.
 ```
+
+---
+
+# 🔧 FIX FINDINGS CASE-15 (v1.13.0, 14 Sep 2026)
+
+Dua bug dari tracing case #15 — detail lengkap di `docs/findings-2026-09-14-case-15.md`.
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | Reply solver ke pesan **reminder** tidak terdeteksi reply-chain (silent data loss) | Pesan reminder (manual + cron) kini di-INSERT ke `wa_messages` dengan `quoted_id` → pesan root, jadi `find_case_by_chain` menemukannya (source `chain`) |
+| 2 | Mention solver tersimpan sebagai LID mentah (`@71782207893754`) di `progress_updates` | `rewrite_mentions()` mengganti `@<lid|number>` dengan nama dari `_contact_cache`, fallback token asli. `wa_messages.body` tetap mentah |
+
+## Checklist re-verify pasca-deploy
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. Kirim reminder ke case yang belum done:
+curl -s -X POST $API/api/cases/<ID>/reminder -H "X-API-Key: $KEY" -H 'Content-Type: application/json' -d '{}'
+
+# 2. Pastikan pesan reminder masuk wa_messages (quoted_id → root):
+docker exec moban-db psql -U postgres -d moban -c \
+  "SELECT wa_message_id, quoted_id, body FROM wa_messages WHERE quoted_id = (SELECT wa_message_id FROM cases WHERE id = <ID>) ORDER BY created_at DESC LIMIT 3;"
+# → baris reminder harus ada
+
+# 3. Di grup WA: reply PESAN REMINDER tadi ("siap", "done", dll) — bukan pesan root.
+#    Lalu cek progress_updates terbentuk:
+docker exec moban-db psql -U postgres -d moban -c \
+  "SELECT author, body, parsed_status, source FROM progress_updates WHERE case_id = <ID> ORDER BY created_at DESC LIMIT 2;"
+# → reply ke reminder harus muncul dengan source='chain' ✅
+
+# 4. Solver mention orang di reply → cek body di progress_updates sudah nama, bukan @<lid>:
+#    "done @Furqon Nugroho" bukan "done @71782207893754"
+#    (nama hanya muncul jika kontak sudah dikenal WAHA; fallback tetap token asli)
+```
+
+Catatan: pesan reminder LAMA (sebelum deploy) tetap tidak bisa di-chain — hanya yang baru.

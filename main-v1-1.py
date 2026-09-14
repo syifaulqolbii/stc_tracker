@@ -194,7 +194,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.12.0",
+    version="1.13.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -498,6 +498,30 @@ def store_message(wa_mid, quoted_id, author, body, from_me=False, media_url=None
             (wa_mid, quoted_id, author, body, from_me, media_url, media_type),
         )
         conn.commit()
+
+
+def rewrite_mentions(body: str | None) -> str | None:
+    """Rewrite @<lid|number> mention tokens in body menjadi nama kontak (fix case-15 #2).
+
+    WhatsApp mentransfer mention sebagai token LID/phone mentah (@71782207893754);
+    nama hanya ada di rendering client. Fungsi ini mengganti token dengan nama dari
+    _contact_cache (sudah terisi LID→nama oleh _fetch_contacts), fallback ke token
+    asli kalau kontak tidak dikenal. Non-blocking, tidak pernah raise.
+    """
+    if not body or "@" not in body:
+        return body
+    try:
+        import re as _re
+        out = body
+        for tok in set(_re.findall(r"@(\d{5,})", body)):
+            for key in (f"{tok}@lid", f"{tok}@c.us", tok):
+                name = _contact_cache.get(key)
+                if name:
+                    out = out.replace(f"@{tok}", f"@{name}")
+                    break
+        return out
+    except Exception:
+        return body
 
 
 def find_case_by_code(code: str):
@@ -853,6 +877,10 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
 
     # Download media locally (async, non-blocking for message processing)
     media_url = await _download_and_rewrite_media(raw_media_url)
+    # Rewrite @<lid> mention tokens ke nama kontak (fix case-15 #2). Dilakukan
+    # SETELAH store_message (DB tetap menyimpan body mentah) — hasil rewrite hanya
+    # dipakai untuk parsing status & progress_updates supaya dashboard tampil rapi.
+    body_display = rewrite_mentions(body)
     store_message(wa_mid, quoted, author, body, media_url=media_url, media_type=media_type)
 
     # Resolve contact name in background (non-blocking)
@@ -866,7 +894,7 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
             pass  # non-critical
 
     case, source, conf = None, None, None
-    parsed = parse_rule(body)
+    parsed = parse_rule(body_display)
 
     # 1) regex INC
     if parsed.get("case_code"):
@@ -899,8 +927,10 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
 
     if crawl and source in ("reply", "chain", "rule"):
         source = "crawl"
-    link_and_update(case["id"], wa_mid, author, body,
-                    parsed.get("status"), parsed.get("note") or body[:200], source, conf)
+    # progress_updates menyimpan body_display (mention sudah jadi nama) — body mentah
+    # tetap ada di wa_messages (fix case-15 #2)
+    link_and_update(case["id"], wa_mid, author, body_display,
+                    parsed.get("status"), parsed.get("note") or body_display[:200], source, conf)
     log.info("UPDATE %s <- %s (%s): %s", case["case_code"], author, source, parsed.get("status"))
     return True
 
@@ -1392,7 +1422,10 @@ async def send_reminder(
         chat_id=group["chat_id"],
     )
 
-    # Update DB
+    # Update DB + simpan pesan reminder ke wa_messages supaya reply-chain dari
+    # solver ke pesan reminder TERDETEKSI (fix findings case-15 #1): tanpa row di
+    # sini, find_case_by_chain(quoted_id=<id reminder>) berhenti di depth 0 dan
+    # reply solver hilang diam-diam. quoted_id → pesan root case.
     with db() as conn, conn.cursor() as cur:
         cur.execute(
             """UPDATE cases
@@ -1407,6 +1440,13 @@ async def send_reminder(
                VALUES (%s, %s, %s, 'manual')""",
             (case_id, wa_mid, message),
         )
+        if wa_mid:
+            cur.execute(
+                """INSERT INTO wa_messages (wa_message_id, quoted_id, body, from_me)
+                   VALUES (%s, %s, %s, true)
+                   ON CONFLICT (wa_message_id) DO NOTHING""",
+                (wa_mid, case["wa_message_id"], message),
+            )
         conn.commit()
 
     return {
@@ -1475,6 +1515,15 @@ async def run_auto_reminders(
                        VALUES (%s, %s, %s, 'cron')""",
                     (case["id"], wa_mid, message),
                 )
+                if wa_mid:
+                    # Simpan juga ke wa_messages (quoted_id → root) supaya reply
+                    # solver ke pesan reminder terdeteksi reply-chain (fix case-15 #1)
+                    cur.execute(
+                        """INSERT INTO wa_messages (wa_message_id, quoted_id, body, from_me)
+                           VALUES (%s, %s, %s, true)
+                           ON CONFLICT (wa_message_id) DO NOTHING""",
+                        (wa_mid, case["wa_message_id"], message),
+                    )
                 conn.commit()
             reminded_cases.append({
                 "id": case["id"],
