@@ -314,7 +314,7 @@ def test_render_case_text_evidence_with_empty_strings():
 
 
 def test_render_case_text_evidence_with_label():
-    """link_evidence entries as {label, url} dicts render label : url."""
+    """link_evidence {label, url} dicts render numbered groups, links below."""
     fields = {
         "ticket_remedy": "INC123",
         "link_evidence": [
@@ -324,19 +324,36 @@ def test_render_case_text_evidence_with_label():
     }
     result = render_case_text("non_order", fields)
     assert "Link Evidence :" in result
-    assert "Evidence DSC : https://imgur.com/a" in result
-    assert "Screenshot : https://imgur.com/b" in result
+    assert "1. Evidence DSC:" in result
+    assert "   https://imgur.com/a" in result
+    assert "2. Screenshot:" in result
+    assert "   https://imgur.com/b" in result
+
+
+def test_render_case_text_evidence_label_multiple_urls():
+    """One label can hold multiple URLs under it."""
+    fields = {
+        "ticket_remedy": "INC123",
+        "link_evidence": [
+            {"label": "Error DSC", "url": ["https://imgur.com/1", "https://imgur.com/2"]},
+        ],
+    }
+    result = render_case_text("non_order", fields)
+    assert "1. Error DSC:" in result
+    assert "   https://imgur.com/1" in result
+    assert "   https://imgur.com/2" in result
+    assert "2." not in result
 
 
 def test_render_case_text_evidence_label_missing():
-    """{url} dict without label renders the bare link."""
+    """{url} dict without label renders a numbered bare link."""
     fields = {
         "ticket_remedy": "INC123",
         "link_evidence": [{"url": "https://imgur.com/nolabel"}],
     }
     result = render_case_text("non_order", fields)
-    assert "https://imgur.com/nolabel" in result
     assert "Link Evidence :" in result
+    assert "1. https://imgur.com/nolabel" in result
 
 
 def test_render_case_text_evidence_mixed_string_and_dict():
@@ -349,8 +366,9 @@ def test_render_case_text_evidence_mixed_string_and_dict():
         ],
     }
     result = render_case_text("non_order", fields)
-    assert "https://imgur.com/legacy" in result
-    assert "Evidence DSC : https://imgur.com/baru" in result
+    assert "1. https://imgur.com/legacy" in result
+    assert "2. Evidence DSC:" in result
+    assert "   https://imgur.com/baru" in result
 
 
 def test_case_fields_non_order_count():

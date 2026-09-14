@@ -183,20 +183,36 @@ def render_case_text(case_type: str, fields: dict,
             if key == "link_evidence" and isinstance(val, list):
                 # Render array of evidence links, one per line.
                 # Entry boleh {label, url} atau string URL lama (tanpa label).
-                links = []
+                # url bisa string tunggal atau list. Ada label → nomor + link
+                # di bawah; tanpa label → nomor + link sebaris.
+                entries: list[tuple[str | None, list[str]]] = []
                 for v in val:
                     if isinstance(v, dict):
                         label = str(v.get("label", "") or "").strip()
-                        url = str(v.get("url", "") or "").strip()
-                        if url:
-                            links.append(f"{label} : {url}" if label else url)
+                        u = v.get("url")
+                        if isinstance(u, list):
+                            urls = [x.strip() for x in u if x and str(x).strip()]
+                        else:
+                            urls = [u.strip()] if u and str(u).strip() else []
+                        if urls:
+                            entries.append((label or None, urls))
                     else:
                         s = str(v).strip()
                         if s:
-                            links.append(s)
-                if links:
+                            entries.append((None, [s]))
+                if entries:
                     lines.append("Link Evidence :")
-                    lines.extend(links)
+                    n = 0
+                    for label, urls in entries:
+                        if label:
+                            n += 1
+                            lines.append(f"{n}. {label}:")
+                            for u in urls:
+                                lines.append(f"   {u}")
+                        else:
+                            for u in urls:
+                                n += 1
+                                lines.append(f"{n}. {u}")
             else:
                 s = str(val).strip()
                 if s:

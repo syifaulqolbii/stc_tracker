@@ -979,7 +979,7 @@ class CaseIn(BaseModel):
             "Field case (semua opsional): ticket_remedy (format INC), case_id, "
             "no_indihome, order_id, msisdn, last_milestone, request_case, detail_case, "
             "dll. link_evidence = array of {label, url}; label opsional (kosong → "
-            "render link polos tanpa label)."
+            "link polos), url bisa string tunggal atau array (banyak link satu label)."
         ),
         json_schema_extra={
             "example": {
@@ -987,7 +987,8 @@ class CaseIn(BaseModel):
                 "no_indihome": "0211234567",
                 "detail_case": "Pelanggan kendala aktivasi.",
                 "link_evidence": [
-                    {"label": "Evidence DSC", "url": "https://imgur.com/a"},
+                    {"label": "Error DSC", "url": ["https://imgur.com/1", "https://imgur.com/2"]},
+                    {"label": "Bukti Bayar", "url": "https://imgur.com/3"},
                     {"url": "https://imgur.com/tanpa_label"},
                 ],
             }
