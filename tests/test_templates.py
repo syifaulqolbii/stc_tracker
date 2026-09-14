@@ -313,6 +313,46 @@ def test_render_case_text_evidence_with_empty_strings():
     # Empty strings should not appear as blank lines
 
 
+def test_render_case_text_evidence_with_label():
+    """link_evidence entries as {label, url} dicts render label : url."""
+    fields = {
+        "ticket_remedy": "INC123",
+        "link_evidence": [
+            {"label": "Evidence DSC", "url": "https://imgur.com/a"},
+            {"label": "Screenshot", "url": "https://imgur.com/b"},
+        ],
+    }
+    result = render_case_text("non_order", fields)
+    assert "Link Evidence :" in result
+    assert "Evidence DSC : https://imgur.com/a" in result
+    assert "Screenshot : https://imgur.com/b" in result
+
+
+def test_render_case_text_evidence_label_missing():
+    """{url} dict without label renders the bare link."""
+    fields = {
+        "ticket_remedy": "INC123",
+        "link_evidence": [{"url": "https://imgur.com/nolabel"}],
+    }
+    result = render_case_text("non_order", fields)
+    assert "https://imgur.com/nolabel" in result
+    assert "Link Evidence :" in result
+
+
+def test_render_case_text_evidence_mixed_string_and_dict():
+    """Legacy string URL and new {label, url} dict coexist."""
+    fields = {
+        "ticket_remedy": "INC123",
+        "link_evidence": [
+            "https://imgur.com/legacy",
+            {"label": "Evidence DSC", "url": "https://imgur.com/baru"},
+        ],
+    }
+    result = render_case_text("non_order", fields)
+    assert "https://imgur.com/legacy" in result
+    assert "Evidence DSC : https://imgur.com/baru" in result
+
+
 def test_case_fields_non_order_count():
     """Non Order should have exactly 6 fields (case_id added v1.14)."""
     assert len(CASE_FIELDS["non_order"]) == 6

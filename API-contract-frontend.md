@@ -162,8 +162,8 @@ Content-Type: application/json
     "request_case": "Mohon bantuannya follow up aktivasi",
     "detail_case": "Pelanggan kendala aktivasi, last milestone TSEL_ACTIVATION_FALLOUT. Mohon dicek di sisi TSEL.",
     "link_evidence": [
-      "https://prnt.sc/example1",
-      "https://drive.google.com/example2"
+      { "label": "Evidence DSC", "url": "https://prnt.sc/example1" },
+      { "label": "Screenshot", "url": "https://drive.google.com/example2" }
     ]
   }
 }
@@ -188,8 +188,8 @@ Content-Type: application/json
     "request_case": "Mohon cek status aktivasi",
     "detail_case": "Pelanggan sudah bayar tapi layanan belum aktif.",
     "link_evidence": [
-      "https://imgur.com/bukti_bayar",
-      "https://imgur.com/screenshot"
+      { "url": "https://imgur.com/bukti_bayar" },
+      { "label": "Screenshot", "url": "https://imgur.com/screenshot" }
     ]
   }
 }
@@ -213,7 +213,7 @@ Content-Type: application/json
     "request_case": "Cek coverage area",
     "detail_case": "Pelanggan komplain sinyal lemah di area Jakarta Selatan.",
     "link_evidence": [
-      "https://imgur.com/sinyal_screenshot"
+      { "label": "Sinyal", "url": "https://imgur.com/sinyal_screenshot" }
     ]
   }
 }
@@ -225,7 +225,7 @@ Aturan:
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
 - `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih.
-- `fields.link_evidence` — array of URL. Bisa multiple link. Kosongkan array jika tidak ada evidence.
+- `fields.link_evidence` — array of object `{"label": "...", "url": "..."}`. Bisa multiple link. `label` opsional (kalau kosong, render link polos). Kosongkan array jika tidak ada evidence. Backward compatible: string URL lama tetap diterima.
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
 - `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
@@ -976,7 +976,7 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 | `no_indihome` | Nomer Indihome | text/tel | ✅ |
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
-| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
+| `link_evidence` | Link Evidence | array of {label, url} | ❌ |
 
 #### `Non AO` — Case Non Activation Order
 | Key | Label UI | Tipe | Required |
@@ -987,7 +987,7 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 | `last_milestone` | Last Milestone | text | ❌ |
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
-| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
+| `link_evidence` | Link Evidence | array of {label, url} | ❌ |
 
 #### `Mobile` — Case Mobile
 | Key | Label UI | Tipe | Required |
@@ -996,7 +996,7 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 | `msisdn` | MSISDN | tel | ✅ |
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
-| `link_evidence` | Link Evidence | array of URL (multiple links) | ❌ |
+| `link_evidence` | Link Evidence | array of {label, url} | ❌ |
 
 ### Mode Textarea: Copy-Paste Wording
 
@@ -1561,7 +1561,7 @@ Penyebab: frontend mengirim `group_id` grup yang sedang di-inaktifkan admin → 
   - Non Order: ticket_remedy, no_indihome, request_case, detail_case, link_evidence
   - Non AO: ticket_remedy, order_id, no_indihome, last_milestone, request_case, detail_case, link_evidence
   - Mobile: ticket_remedy, msisdn, request_case, detail_case, link_evidence
-- **`link_evidence`**: Array of URL (bukan single link). Bisa multiple evidence per case.
+- **`link_evidence`**: Array of object `{label, url}` (sejak v1.15). Bisa multiple evidence per case. `label` opsional — kosong render link polos. Backward compatible: string URL lama tetap diterima.
 - **`request_case`**: Field baru untuk deskripsi request/keperluan case.
 - **Field dihapus dari rendering**: email, cp, tgl_kejadian, status_case, raw_text, tier, lokasi, case_id, grapari, milestone_info tidak lagi ditampilkan per jenis case.
 

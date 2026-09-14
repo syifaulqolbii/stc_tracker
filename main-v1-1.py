@@ -973,7 +973,26 @@ class CaseIn(BaseModel):
     asal_grapari: str | None = Field(None, description="Asal GraPARI (hanya jika Sumber Ticket = Grapari). Free text.")
     mentions: list[Mention] = Field([], description="Daftar kontak solver yang akan di-mention di grup WA")
     custom_header: str | None = Field(None, description="Custom header pesan. Kosongkan untuk default.")
-    fields: dict = Field({}, description="Field case (semua opsional): ticket_remedy, no_indihome, detail_case, case_id, evidence, dll")
+    fields: dict = Field(
+        {},
+        description=(
+            "Field case (semua opsional): ticket_remedy (format INC), case_id, "
+            "no_indihome, order_id, msisdn, last_milestone, request_case, detail_case, "
+            "dll. link_evidence = array of {label, url}; label opsional (kosong → "
+            "render link polos tanpa label)."
+        ),
+        json_schema_extra={
+            "example": {
+                "ticket_remedy": "INC012345678",
+                "no_indihome": "0211234567",
+                "detail_case": "Pelanggan kendala aktivasi.",
+                "link_evidence": [
+                    {"label": "Evidence DSC", "url": "https://imgur.com/a"},
+                    {"url": "https://imgur.com/tanpa_label"},
+                ],
+            }
+        },
+    )
 
     @field_validator("fields")
     @classmethod

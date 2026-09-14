@@ -181,12 +181,22 @@ def render_case_text(case_type: str, fields: dict,
         val = fields.get(key)
         if val is not None:
             if key == "link_evidence" and isinstance(val, list):
-                # Render array of evidence links, one per line
-                links = [str(v).strip() for v in val if v and str(v).strip()]
+                # Render array of evidence links, one per line.
+                # Entry boleh {label, url} atau string URL lama (tanpa label).
+                links = []
+                for v in val:
+                    if isinstance(v, dict):
+                        label = str(v.get("label", "") or "").strip()
+                        url = str(v.get("url", "") or "").strip()
+                        if url:
+                            links.append(f"{label} : {url}" if label else url)
+                    else:
+                        s = str(v).strip()
+                        if s:
+                            links.append(s)
                 if links:
-                    lines.append(f"Link Evidence :")
-                    for link in links:
-                        lines.append(link)
+                    lines.append("Link Evidence :")
+                    lines.extend(links)
             else:
                 s = str(val).strip()
                 if s:
