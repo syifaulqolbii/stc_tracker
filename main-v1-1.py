@@ -500,25 +500,30 @@ def store_message(wa_mid, quoted_id, author, body, from_me=False, media_url=None
         conn.commit()
 
 
-def rewrite_mentions(body: str | None) -> str | None:
+async def rewrite_mentions(body: str | None) -> str | None:
     """Rewrite @<lid|number> mention tokens in body menjadi nama kontak (fix case-15 #2).
 
     WhatsApp mentransfer mention sebagai token LID/phone mentah (@71782207893754);
-    nama hanya ada di rendering client. Fungsi ini mengganti token dengan nama dari
-    _contact_cache (sudah terisi LID→nama oleh _fetch_contacts), fallback ke token
-    asli kalau kontak tidak dikenal. Non-blocking, tidak pernah raise.
+    nama hanya ada di rendering client. Untuk tiap token: cek _contact_cache dulu,
+    kalau tidak ada fallback ke resolve_contact_name() (WAHA API LID→phone→nama)
+    dan hasilnya ter-cache untuk pesan berikutnya. Fallback ke token asli kalau
+    kontak tetap tidak dikenal. Tidak pernah raise.
     """
     if not body or "@" not in body:
         return body
     try:
-        import re as _re
         out = body
-        for tok in set(_re.findall(r"@(\d{5,})", body)):
+        for tok in set(re.findall(r"@(\d{5,})", body)):
+            name = None
             for key in (f"{tok}@lid", f"{tok}@c.us", tok):
                 name = _contact_cache.get(key)
                 if name:
-                    out = out.replace(f"@{tok}", f"@{name}")
                     break
+            if not name:
+                # Not cached — resolve via WAHA (LID → phone → name), then cached
+                name = await resolve_contact_name(f"{tok}@lid")
+            if name:
+                out = out.replace(f"@{tok}", f"@{name}")
         return out
     except Exception:
         return body
@@ -880,7 +885,7 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     # Rewrite @<lid> mention tokens ke nama kontak (fix case-15 #2). Dilakukan
     # SETELAH store_message (DB tetap menyimpan body mentah) — hasil rewrite hanya
     # dipakai untuk parsing status & progress_updates supaya dashboard tampil rapi.
-    body_display = rewrite_mentions(body)
+    body_display = await rewrite_mentions(body)
     store_message(wa_mid, quoted, author, body, media_url=media_url, media_type=media_type)
 
     # Resolve contact name in background (non-blocking)

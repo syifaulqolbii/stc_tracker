@@ -1821,39 +1821,80 @@ class TestMentionRewrite:
     """Fix case-15 #2: token mention @<lid|number> di body di-rewrite jadi nama
     kontak untuk parsing/progress_updates; wa_messages tetap simpan body mentah."""
 
-    def test_rewrite_uses_contact_cache(self):
+    @pytest.mark.asyncio
+    async def test_rewrite_uses_contact_cache(self):
         main_module._contact_cache.clear()
         main_module._contact_cache["71782207893754@lid"] = "Furqon Nugroho"
         try:
             body = "Baik rekan, mohon dibantu @71782207893754"
-            out = main_module.rewrite_mentions(body)
+            out = await main_module.rewrite_mentions(body)
             assert out == "Baik rekan, mohon dibantu @Furqon Nugroho"
         finally:
             main_module._contact_cache.clear()
 
-    def test_rewrite_fallback_keeps_raw_token(self):
+    @pytest.mark.asyncio
+    async def test_rewrite_falls_back_to_waha_api(self):
+        """Token tidak ada di cache → resolve via WAHA API (mock), lalu rewrite."""
         main_module._contact_cache.clear()
         try:
-            body = "cek @99999999999 dulu"
-            assert main_module.rewrite_mentions(body) == "cek @99999999999 dulu"
+            with patch.object(main_module, "resolve_contact_name",
+                              new_callable=AsyncMock, return_value="Furqon Nugroho") as mock_resolve:
+                body = "Baik rekan, mohon dibantu @71782207893754"
+                out = await main_module.rewrite_mentions(body)
+                assert out == "Baik rekan, mohon dibantu @Furqon Nugroho"
+                mock_resolve.assert_awaited_once_with("71782207893754@lid")
         finally:
             main_module._contact_cache.clear()
 
-    def test_rewrite_without_at_is_noop(self):
-        assert main_module.rewrite_mentions("tanpa mention") == "tanpa mention"
-        assert main_module.rewrite_mentions(None) is None
+    @pytest.mark.asyncio
+    async def test_rewrite_caches_resolved_name_for_next_message(self):
+        """Nama hasil resolve WAHA ter-cache di _contact_cache — pesan berikutnya
+        dengan token sama tidak memanggil API lagi."""
+        main_module._contact_cache.clear()
+        try:
+            async def _resolve_and_cache(author):
+                main_module._contact_cache[author] = "Furqon Nugroho"
+                return "Furqon Nugroho"
+            with patch.object(main_module, "resolve_contact_name",
+                              new_callable=AsyncMock, side_effect=_resolve_and_cache) as mock_resolve:
+                out = await main_module.rewrite_mentions("dibantu @71782207893754 ya")
+                assert out == "dibantu @Furqon Nugroho ya"
+                # pesan kedua: token sudah ter-cache → resolve TIDAK dipanggil lagi
+                out2 = await main_module.rewrite_mentions("lagi @71782207893754")
+                assert out2 == "lagi @Furqon Nugroho"
+                mock_resolve.assert_awaited_once()
+        finally:
+            main_module._contact_cache.clear()
 
-    def test_rewrite_never_raises_on_weird_input(self):
+    @pytest.mark.asyncio
+    async def test_rewrite_fallback_keeps_raw_token(self):
+        main_module._contact_cache.clear()
+        try:
+            with patch.object(main_module, "resolve_contact_name",
+                              new_callable=AsyncMock, return_value=None):
+                body = "cek @99999999999 dulu"
+                assert await main_module.rewrite_mentions(body) == "cek @99999999999 dulu"
+        finally:
+            main_module._contact_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_rewrite_without_at_is_noop(self):
+        assert await main_module.rewrite_mentions("tanpa mention") == "tanpa mention"
+        assert await main_module.rewrite_mentions(None) is None
+
+    @pytest.mark.asyncio
+    async def test_rewrite_never_raises_on_weird_input(self):
         main_module._contact_cache.clear()
         main_module._contact_cache["1234567890@lid"] = "Ok"
         try:
-            assert main_module.rewrite_mentions("") == ""
-            assert main_module.rewrite_mentions("@") == "@"
-            assert main_module.rewrite_mentions("@12 @345") == "@12 @345"  # < 5 digit, tidak di-rewrite
+            assert await main_module.rewrite_mentions("") == ""
+            assert await main_module.rewrite_mentions("@") == "@"
+            assert await main_module.rewrite_mentions("@12 @345") == "@12 @345"  # < 5 digit, tidak di-rewrite
         finally:
             main_module._contact_cache.clear()
 
-    def test_webhook_stores_raw_body_and_progress_gets_display(self, mock_waha):
+    @pytest.mark.asyncio
+    async def test_webhook_stores_raw_body_and_progress_gets_display(self):
         """handle_message: wa_messages dapat body MENTAH; progress_updates dapat
         body hasil rewrite (mention jadi nama)."""
         raw_body = "done INC012392211 @71782207893754"
@@ -1870,21 +1911,18 @@ class TestMentionRewrite:
             ])
             stored = {}
             with patch.object(main_module, "db", return_value=mock_conn), \
-                 patch.object(main_module, "WAHA_WEBHOOK_SECRET", "testsecret"), \
                  patch.object(main_module, "store_message",
                               side_effect=lambda mid, q, a, b, **kw: stored.update({"body": b})), \
                  patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
                  patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None):
-                tc = TestClient(main_module.app)
-                r = tc.post("/webhooks/waha", headers={"X-Webhook-Secret": "testsecret"},
-                            json={"event": "message", "payload": {
-                                "id": {"_serialized": "solver_mid_1"},
-                                "from": "120363xxx@g.us",
-                                "participant": "29321792118900@lid",
-                                "body": raw_body,
-                                "fromMe": False,
-                            }})
-                assert r.status_code == 200
+                r = await main_module.handle_message({
+                    "id": {"_serialized": "solver_mid_1"},
+                    "from": "120363xxx@g.us",
+                    "participant": "29321792118900@lid",
+                    "body": raw_body,
+                    "fromMe": False,
+                })
+                assert r is True
                 # wa_messages → body MENTAH
                 assert stored["body"] == raw_body
                 # progress_updates → body hasil rewrite (mention jadi nama)
