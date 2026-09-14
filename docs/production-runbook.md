@@ -492,3 +492,13 @@ curl -s -X POST $API/api/cases/preview -H "X-API-Key: $KEY" -H 'Content-Type: ap
   -d '{"jenis_case":"Mobile","fields":{"case_id":"REQ-9981","msisdn":"0812"}}'
 # → text berisi "Case ID : REQ-9981", TANPA baris "Ticket Remedy"
 ```
+
+### Exact-match kode non-INC (v1.14.0, lanjutan)
+
+Selain INC (regex), ketikan manual kode non-INC yang TERDAFTAR juga terdeteksi:
+
+- Syarat: body mengandung keyword status (`proses`, `done`, `beres`, `kendala`, dll)
+  DAN menyebut persis salah satu `case_code` terbuka di grup itu (word-boundary,
+  case-insensitive) → langsung ter-link, source `rule`, tanpa LLM
+- Contoh: `proses 1-SSNKPOA` ✅ · `kode 11-SSNKPOA2` ❌ (substring, ditolak boundary check)
+- Tanpa keyword status → tidak dijalankan (hemat query; pesan chat biasa aman)

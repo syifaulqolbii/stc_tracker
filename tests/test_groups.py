@@ -5,7 +5,7 @@ group-scoped open_case_codes.
 import os
 import sys
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, call
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import importlib
@@ -128,7 +128,9 @@ class TestHandleMessageGroupVerification:
             result = await main_module.handle_message(payload)
             assert result is True
             # open_case_codes dipanggil dengan group_id dari chat asal pesan
-            mock_codes.assert_called_once_with(1)
+            # (v1.14: bisa 2x — exact-match non-INC + LLM fallback — keduanya scoped)
+            assert mock_codes.call_args_list.count(call(1)) == mock_codes.call_count
+            assert mock_codes.call_count >= 1
 
 
 class TestOpenCaseCodesScoped:
@@ -151,3 +153,72 @@ class TestOpenCaseCodesScoped:
             main_module.open_case_codes()
             sql = mock_cursor.execute.call_args[0][0]
             assert "group_id" not in sql
+
+# ======================================================================
+# v1.14 — exact-match non-INC case codes (tanpa LLM)
+# ======================================================================
+
+class TestExactMatchNonIncCode:
+    """Ketikan manual kode non-INC terdaftar (mis. 'proses 1-SSNKPOA') harus
+    terdeteksi via lookup persis ke open_case_codes — tanpa LLM."""
+
+    @pytest.mark.asyncio
+    async def test_non_inc_code_in_body_links_case(self):
+        case = {"id": 20, "case_code": "1-SSNKPOA", "group_id": 1}
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            GROUP_A,
+            case,   # find_case_by_code("1-SSNKPOA")
+            None, None, None,  # link_and_update
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "open_case_codes", return_value=["1-SSNKPOA", "2-ABCDEF"]) as mock_codes, \
+             patch.object(main_module, "find_case_by_code", return_value=case) as mock_find, \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock) as mock_llm, \
+             patch.object(main_module, "link_and_update") as mock_link:
+            payload = {**_handle_message_payload(body="proses 1-SSNKPOA ya"), "from": "120363001@g.us"}
+            result = await main_module.handle_message(payload)
+            assert result is True
+            mock_find.assert_called_with("1-SSNKPOA")
+            # LLM TIDAK boleh dipanggil — sudah ketemu via rule
+            mock_llm.assert_not_called()
+            # source rule + status from keyword
+            args = mock_link.call_args.args
+            assert args[4] == "in_progress"  # 'proses' keyword
+
+    @pytest.mark.asyncio
+    async def test_partial_code_no_false_positive(self):
+        """Angka/kode mirip tapi tidak persis → TIDAK match (anti false-positive)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            GROUP_A,
+            None, None,  # parse_llm mocked; no db calls expected for LLM path
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "open_case_codes", return_value=["1-SSNKPOA"]), \
+             patch.object(main_module, "find_case_by_code", return_value=None) as mock_find, \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "link_and_update"):
+            payload = {**_handle_message_payload(body=" kode 11-SSNKPOA2 salah ketik"), "from": "120363001@g.us"}
+            result = await main_module.handle_message(payload)
+            # substring '1-SSNKPOA' ada di '11-SSNKPOA2' → boundary check harus menolak
+            mock_find.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_status_keyword_no_exact_match(self):
+        """Body tanpa keyword status (mis. hanya 'halo') → exact-match tidak dijalankan."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[GROUP_A])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "open_case_codes", return_value=["1-SSNKPOA"]) as mock_codes, \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "link_and_update"):
+            payload = {**_handle_message_payload(body="halo rekan 1-SSNKPOA"), "from": "120363001@g.us"}
+            result = await main_module.handle_message(payload)
+            # tanpa status keyword → exact-match path skip (hemat query)
+            for c in mock_codes.call_args_list:
+                pass  # dipanggil hanya oleh LLM fallback (yang return None)
+            assert mock_codes.call_count == 1  # hanya LLM fallback

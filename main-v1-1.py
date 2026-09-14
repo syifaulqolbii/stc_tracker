@@ -904,6 +904,15 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     # 1) regex INC
     if parsed.get("case_code"):
         case, source = find_case_by_code(parsed["case_code"]), "rule"
+    # 1b) exact-match kode non-INC yang terdaftar (v1.14): kalau body menyebut
+    # persis salah satu case_code terbuka di grup ini (mis. 'proses 1-SSNKPOA'),
+    # link tanpa perlu LLM. Lookup PERSIS → aman dari false-positive angka acak.
+    if case is None and parsed.get("status"):
+        for occ in open_case_codes(group["id"]):
+            if occ and re.search(rf"(?<![\w-]){re.escape(occ)}(?![\w-])", body_display, re.I):
+                case, source = find_case_by_code(occ), "rule"
+                if case:
+                    break
     # 2) reply langsung / 3) chain traversal
     if case is None and quoted:
         case, chain_src = find_case_by_chain(quoted)
