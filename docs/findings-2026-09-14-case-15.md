@@ -1,12 +1,26 @@
 # 📋 Arsip Temuan — Tracing Case #15 (INC01239221)
 
-Tanggal: 2026-09-14 · Status: **✅ KEDUANYA SUDAH DIFIX (v1.13.0)** · Sumber: investigasi manual via `GET /api/cases/{id}` di prod
+Tanggal: 2026-09-14 · Status: **✅ KEDUANYA SUDAH DIFIX & TERVERIFIKASI DI PRODUKSI (v1.13.0)** · Sumber: investigasi manual via `GET /api/cases/{id}` di prod
 
-> **Update 14 Sep 2026:** Kedua temuan sudah difix + 9 test baru (235 PASS).
+> **Update 14 Sep 2026:** Kedua temuan sudah difix + test baru (237 PASS).
 > Fix #1: pesan reminder (manual & cron) di-INSERT ke `wa_messages` (quoted_id → root).
 > Fix #2: `rewrite_mentions()` — token `@<lid>` di-rewrite jadi nama kontak untuk
 > `progress_updates` (parsing & tampilan); `wa_messages.body` tetap menyimpan mentah.
 > Checklist re-verify pasca-deploy: `docs/production-runbook.md` § FIX FINDINGS CASE-15.
+>
+> **Verifikasi produksi (14 Sep, sesi kedua) — BERHASIL:**
+> - **Fix #1 PASS**: reply solver ke pesan reminder ter-link ke case dengan
+>   `source: chain` (sebelumnya silent drop)
+> - **Fix #2 PASS**: `@71782207893754` ter-resolve jadi nama profil
+>   `@ⒹⒾⓋⒶⓃⒹⒶ ⒻⒾⓇⒹⒶⓊⓈ` di `progress_updates`
+> - Catatan: fix #2 sempat gagal di deployment pertama (commit `bea54bf`) karena
+>   rewrite hanya baca cache in-memory tanpa fallback API. Difinalisasi di
+>   commit `9cb8c53` — cache miss kini fallback ke `resolve_contact_name`
+>   (WAHA: LID → phone → nama), hasil ter-cache untuk pesan berikutnya.
+>   Pelajaran: WAHA `GET /api/contacts` bisa resolve nama untuk kontak yang
+>   TIDAK tersimpan (pushname profil) — tidak wajib save nomor dulu.
+> - Data historis (pesan sebelum deploy) tetap mentah — backfill opsional
+>   terpisah jika dibutuhkan.
 
 Skenario yang ditrace:
 
