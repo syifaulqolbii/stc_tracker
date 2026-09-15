@@ -1623,7 +1623,11 @@ async def send_reminder(
 
 @app.post("/api/cases/{case_id}/replies", tags=["Cases"],
           summary="Balas pesan solver dari web",
-          description="Kirim teks + image/file sebagai reply ke pesan solver di grup case.")
+          description=("Kirim teks + image/file sebagai reply ke pesan solver di grup case. "
+                       "Selalu balas lewat endpoint ini, jangan dari HP bot: pesan manual dari akun bot "
+                       "(fromMe) di-skip webhook sehingga reply-chain putus; pesan via endpoint ini dicatat "
+                       "ke wa_messages (from_me, quoted_id, case_id) sehingga balasan solver berikutnya "
+                       "tetap ter-link (source=chain)."))
 async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
                          _auth: str = Depends(verify_api_key),
                          _rate: None = Depends(check_rate_limit)):

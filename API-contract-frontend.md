@@ -529,6 +529,8 @@ Content-Type: application/json
 
 **Alur FE:** tombol **Balas** di tiap bubble solver di timeline → form (textarea + picker ≤3 file) → encode base64 → POST → refresh timeline.
 
+> ⚠️ **Selalu balas lewat web, jangan dari HP bot.** Pesan yang diketik manual dari akun bot (`fromMe=true`) di-skip webhook sehingga tidak tercatat di `wa_messages` — reply-chain putus dan balasan solver berikutnya tidak ter-link ke case. Pesan via endpoint ini dicatat (`from_me=true`, `quoted_id` = pesan solver, `case_id` terisi) sehingga rantai lanjut (`source=chain`).
+
 ---
 
 ### 3.7 `POST /api/crawl` — Backfill histori grup (admin)
