@@ -39,3 +39,7 @@ docker-compose.override.yml
 
 # Database dumps written by scripts/backup-db.sh — production data, never commit
 backups/
+
+# SDD / git worktrees (isolated workspaces, never commit contents)
+.worktrees/
+.superpowers/
