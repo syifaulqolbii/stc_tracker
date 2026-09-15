@@ -525,7 +525,7 @@ Content-Type: application/json
 
 **Response `200`:** `{ "ok": true, "wa_message_ids": ["..."] }`
 
-**Error:** `404` case tidak ada · `422` reply_to bukan pesan case ini / MIME tak didukung / base64 invalid / kosong / >3 file · `413` file > 5 MB · `502` WAHA gagal.
+**Error:** `404` case tidak ada · `400` case tidak punya grup aktif · `422` reply_to bukan pesan case ini / MIME tak didukung / base64 invalid / kosong / >3 file · `413` file > 5 MB · `502` WAHA gagal.
 
 **Alur FE:** tombol **Balas** di tiap bubble solver di timeline → form (textarea + picker ≤3 file) → encode base64 → POST → refresh timeline.
 
