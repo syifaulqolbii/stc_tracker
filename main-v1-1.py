@@ -194,7 +194,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.14.0",
+    version="1.18.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -532,22 +532,49 @@ async def rewrite_mentions(body: str | None) -> str | None:
         return body
 
 
-MENTION_TOKEN_RE = re.compile(r"@(\d{5,})")
+MENTION_TOKEN_RE = re.compile(r"@\+?([\d][\d\s\-.]{3,}\d)(?![\w])")
+
+
+def normalize_mention_number(raw: str) -> str | None:
+    """Normalisasi token mention manusiawi → nomor WA format `62…` (| None).
+
+    Terima: `@628…`, `@+62…`, `@081…`, separator spasi/strip/titik di tengah.
+    Tolak: hasil tidak cocok `^62\\d{7,14}$` (terlalu pendek/panjang, bukan
+    nomor Indonesia). Tidak pernah raise.
+    """
+    if not raw:
+        return None
+    try:
+        digits = re.sub(r"\D", "", raw)
+        if digits.startswith("0"):
+            digits = "62" + digits[1:]
+        if re.fullmatch(r"62\d{7,14}", digits or ""):
+            return digits
+        return None
+    except Exception:
+        return None
 
 
 def extract_mention_numbers(text: str | None) -> list[str]:
-    """Extract token `@<digit>` yang diketik manual di teks (fix case-23).
+    """Extract token `@<nomor>` yang diketik manual di teks (fix case-23, v1.17+).
 
     Teks polos `@628xxx` TANPA mentionedJid tidak pernah ngetag di WhatsApp.
     Helper ini menjadikan teks sebagai sumber kebenaran terakhir: token yang
     sudah dirender tapi belum masuk mentions eksplisit dikembalikan agar ikut
-    dikirim ke WAHA. Tidak match: nomor tanpa `@` (MSISDN/indihome/INC),
-    `@nama` (pushname), email. Ordered-unique, tidak pernah raise.
+    dikirim ke WAHA. Token dinormalisasi dulu (v1.18): terima `@+62…`,
+    `@081…`, spasi/strip/titik → output selalu `62…`. Tidak match: nomor
+    tanpa `@` (MSISDN/indihome/INC), `@nama` (pushname), email. Ordered-unique,
+    tidak pernah raise.
     """
     if not text or "@" not in text:
         return []
     try:
-        return list(dict.fromkeys(MENTION_TOKEN_RE.findall(text)))
+        out: list[str] = []
+        for raw in MENTION_TOKEN_RE.findall(text):
+            num = normalize_mention_number(raw)
+            if num and num not in out:
+                out.append(num)
+        return out
     except Exception:
         return []
 

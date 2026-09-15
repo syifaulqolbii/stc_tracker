@@ -2159,6 +2159,28 @@ class TestManualMentionExtraction:
         stored = _json.loads(insert_call.args[1][11])
         assert {"number": "628119298880", "name": None} in stored
 
+    def test_create_case_manual_mention_human_format(self, mock_waha):
+        """custom_header '@+62 811-9298-880' (kasus user) → payload + DB ternormalisasi 628…."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=self._create_seq(52, "INC231231121"))
+        with patch.object(main_module, "db", return_value=mock_conn), \
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "group_id": 1, "jenis_case": "Mobile",
+                "mentions": [],
+                "custom_header": "tolong dibantu @+62 811-9298-880 kerjakan",
+                "fields": {"ticket_remedy": "INC231231121", "msisdn": "2132131231",
+                           "request_case": "testing", "detail_case": "test"},
+            })
+        assert r.status_code == 201
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["mentions"] == ["628119298880"]
+        insert_call = [c for c in mock_cursor.execute.call_args_list
+                       if "INSERT INTO cases" in c.args[0]][0]
+        import json as _json
+        stored = _json.loads(insert_call.args[1][11])
+        assert {"number": "628119298880", "name": None} in stored
+
     def test_create_case_manual_mention_merged_with_dropdown(self, mock_waha):
         """nomor sama di dropdown + diketik manual → tidak duplikat di payload."""
         mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=self._create_seq(51, "INC000777101"))
@@ -2266,8 +2288,48 @@ class TestExtractMentionNumbers:
 
     def test_ignores_short_tokens_and_matches_in_detail(self):
         out = main_module.extract_mention_numbers(
-            "detail hubungi @6281232571769 (@12 abaikan, 5 digit? @12345 ya)"
+            "detail hubungi @6281232571769 (@12 abaikan, bukan nomor RI @12345 abaikan)"
         )
         assert "6281232571769" in out
         assert "12" not in out
-        assert "12345" in out
+        assert "12345" not in out  # v1.18: wajib format 62 + 7-14 digit
+
+
+class TestExtractMentionNumbersHumanFormat:
+    """Unit: format manusiawi @+62 / spasi / strip / leading-0 dinormalisasi ke 62…."""
+
+    def test_user_exact_case_plus_space_dash(self):
+        out = main_module.extract_mention_numbers(
+            "tolong dibantu @+62 811-9298-880 kerjakan"
+        )
+        assert out == ["628119298880"]
+
+    def test_variants_normalize_same_number(self):
+        texts = [
+            "hubungi @628119298880 ya",
+            "hubungi @+628119298880 ya",
+            "hubungi @08119298880 ya",
+            "hubungi @62-811-9298-880 ya",
+            "hubungi @62 811 9298 880 ya",
+        ]
+        for t in texts:
+            assert main_module.extract_mention_numbers(t) == ["628119298880"], t
+
+    def test_dedupe_after_normalization(self):
+        out = main_module.extract_mention_numbers(
+            "tolong @628119298880 dan @+62 811-9298-880 ya"
+        )
+        assert out == ["628119298880"]
+
+    def test_rejects_too_short_and_plus_not_after_at(self):
+        out = main_module.extract_mention_numbers(
+            "abaikan @62 81 ya dan @6281 serta a+62 @6281192988x90"
+        )
+        # @62 81 → 4 digit (terlalu pendek); @6281 → 4 digit (terlalu pendek);
+        # "+62" tidak tepat setelah @ → bukan token mention
+        assert out == []
+
+    def test_dot_separator(self):
+        assert main_module.extract_mention_numbers(
+            "hubungi @62.811.9298.880 ya"
+        ) == ["628119298880"]

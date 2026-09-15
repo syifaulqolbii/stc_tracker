@@ -556,6 +556,8 @@ work di case INC2313132123).
 Fix: backend auto-extract token `@<digit>` dari teks final ke payload WAHA
 (union + dedupe dengan mentions dropdown), disimpan juga ke `cases.mentions`
 (`name: null`) supaya reminder ikut ngetag. `{phone}` tanpa mentions → 422.
+(v1.18: format manusiawi `@+62 811-9298-880`, `@081…`, spasi/strip/titik juga
+tertangkap dan dinormalisasi ke `62…`.)
 
 ## Re-verify pasca-deploy
 
