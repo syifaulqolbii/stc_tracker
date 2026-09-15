@@ -17,6 +17,7 @@ Asal Grapari: text input (tidak disimpan di tabel terpisah).
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -1098,6 +1099,37 @@ class ReminderIn(BaseModel):
     )
 
 
+class ReplyAttachment(BaseModel):
+    filename: str = Field(..., description="Nama file asli (ekstensi menentukan tipe)")
+    mimetype: str = Field(..., description="MIME: image/jpeg, image/png, image/webp, video/mp4, application/pdf")
+    data_base64: str = Field(..., description="Isi file base64 (maks 5 MB decoded per file)")
+
+class ReplyIn(BaseModel):
+    message: str | None = Field(None, description="Teks balasan (opsional bila ada attachment)")
+    reply_to_wa_message_id: str = Field(..., description="wa_message_id pesan solver yang dibalas")
+    attachments: list[ReplyAttachment] = Field([], description="Maks 3 file, 5 MB per file")
+    mentions: list[Mention] = Field([], description="Mention tambahan")
+
+
+REPLY_MIMES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+               "video/mp4": ".mp4", "application/pdf": ".pdf"}
+
+
+async def waha_send_media(endpoint: str, payload: dict) -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(f"{WAHA_URL}/api/{endpoint}", headers=WAHA_HEADERS, json=payload)
+            r.raise_for_status()
+            mid = r.json().get("id")
+            return mid.get("_serialized") if isinstance(mid, dict) else mid
+    except httpx.HTTPStatusError as e:
+        log.error("WAHA media send failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"WAHA error: {e.response.status_code}") from e
+    except Exception as e:
+        log.error("WAHA unreachable: %s", e)
+        raise HTTPException(status_code=502, detail="WAHA service unavailable") from e
+
+
 class SolverContactIn(BaseModel):
     name: str = Field(..., description="Nama kontak solver")
     phone_number: str = Field(..., description="Nomor WA format internasional tanpa + (contoh: 6281234567890)")
@@ -1585,6 +1617,74 @@ async def send_reminder(
         "wa_message_id": wa_mid,
         "message": message,
     }
+
+
+@app.post("/api/cases/{case_id}/replies", tags=["Cases"],
+          summary="Balas pesan solver dari web",
+          description="Kirim teks + image/file sebagai reply ke pesan solver di grup case.")
+async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
+                         _auth: str = Depends(verify_api_key),
+                         _rate: None = Depends(check_rate_limit)):
+    if not inp.message and not inp.attachments:
+        raise HTTPException(status_code=422, detail="message atau attachments wajib diisi")
+    if len(inp.attachments) > 3:
+        raise HTTPException(status_code=422, detail="Maksimal 3 file per balasan")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM cases WHERE id = %s AND deleted_at IS NULL", (case_id,))
+        case = cur.fetchone()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        cur.execute("SELECT wa_message_id FROM wa_messages WHERE wa_message_id = %s AND case_id = %s",
+                    (inp.reply_to_wa_message_id, case_id))
+        if not cur.fetchone():
+            raise HTTPException(status_code=422, detail="reply_to_wa_message_id bukan pesan case ini")
+    group = _get_group(case["group_id"]) if case.get("group_id") else None
+    if not group:
+        raise HTTPException(status_code=400, detail="Case tidak punya grup aktif")
+    sent: list[str] = []
+    if inp.message:
+        mid = await waha_send(inp.message,
+                              mentions=[m.number for m in inp.mentions] or None,
+                              reply_to=inp.reply_to_wa_message_id,
+                              chat_id=group["chat_id"])
+        if mid:
+            store_message(mid, inp.reply_to_wa_message_id, None, inp.message, from_me=True)
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE wa_messages SET case_id = %s WHERE wa_message_id = %s", (case_id, mid))
+                conn.commit()
+            sent.append(mid)
+    for att in inp.attachments:
+        ext = REPLY_MIMES.get((att.mimetype or "").lower())
+        if not ext:
+            raise HTTPException(status_code=422, detail=f"mimetype {att.mimetype} tidak didukung")
+        try:
+            raw = base64.b64decode(att.data_base64, validate=True)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"data_base64 {att.filename} bukan base64 valid")
+        if len(raw) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"{att.filename} melebihi 5 MB")
+        # ponytail: simpan apa adanya tanpa konversi; JPEG disarankan tapi tidak dipaksa
+        fname = f"{uuid.uuid4().hex}{ext}"
+        with open(os.path.join(MEDIA_DIR, fname), "wb") as f:
+            f.write(raw)
+        public_url = f"{BACKEND_PUBLIC_URL}/api/media/file/{fname}"
+        endpoint = "sendImage" if att.mimetype.lower().startswith("image/") else "sendFile"
+        payload = {"session": WAHA_SESSION, "chatId": group["chat_id"],
+                   "file": {"mimetype": att.mimetype, "filename": att.filename, "url": public_url},
+                   "reply_to": inp.reply_to_wa_message_id}
+        if endpoint == "sendImage":
+            payload["caption"] = inp.message or ""
+        else:
+            payload["caption"] = att.filename
+        mid = await waha_send_media(endpoint, payload)
+        if mid:
+            store_message(mid, inp.reply_to_wa_message_id, None, inp.message or att.filename,
+                          from_me=True, media_url=public_url, media_type=att.mimetype)
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE wa_messages SET case_id = %s WHERE wa_message_id = %s", (case_id, mid))
+                conn.commit()
+            sent.append(mid)
+    return {"ok": True, "wa_message_ids": sent}
 
 
 @app.post("/api/reminders/run", tags=["Reminders"],

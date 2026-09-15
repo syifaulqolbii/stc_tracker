@@ -8,6 +8,7 @@ import sys
 import json
 import httpx
 import pytest
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock, AsyncMock, call
 from fastapi.testclient import TestClient
 
@@ -2333,3 +2334,46 @@ class TestExtractMentionNumbersHumanFormat:
         assert main_module.extract_mention_numbers(
             "hubungi @62.811.9298.880 ya"
         ) == ["628119298880"]
+
+
+class TestCaseReplies:
+    @contextmanager
+    def _reply_client(self, seq):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=seq)
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            yield TestClient(main_module.app), mock_cursor
+
+    def test_reply_text_only(self, mock_waha):
+        with self._reply_client([{"id": 6, "case_code": "INC000023470570", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                                 None, None]) as (tc, cur):
+            r = tc.post("/api/cases/6/replies", json={"message": "siap, kami cek dulu", "reply_to_wa_message_id": "solver1"})
+            assert r.status_code == 200
+            assert r.json()["ok"] is True
+            assert len(r.json()["wa_message_ids"]) == 1
+
+    def test_reply_wrong_case_message_rejected(self, mock_waha):
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 None]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "milik-case-lain"})
+            assert r.status_code == 422
+
+    def test_reply_with_image_attachment(self, mock_waha, tmp_path, monkeypatch):
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                                 None, None, None, None]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "bukti.jpg", "mimetype": "image/jpeg",
+                                 "data_base64": _b64.b64encode(b"fakejpeg").decode()}]})
+            assert r.status_code == 200
+            assert len(r.json()["wa_message_ids"]) == 1
+
+    def test_reply_empty_rejected(self, mock_waha):
+        with self._reply_client([]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"reply_to_wa_message_id": "solver1"})
+            assert r.status_code == 422
