@@ -637,20 +637,32 @@ def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
     jenis_key = _resolve_jenis_case_name(inp.jenis_case)
     f = inp.fields
 
-    # Resolve names for template rendering
+    # Resolve names for template rendering. ID tak dikenal → 422 SEBELUM
+    # waha_send, supaya pesan tidak masuk grup tanpa row case di DB (fix
+    # "case terkirim tapi tidak ter-record": INSERT bawa FK invalid = gagal
+    # SETELAH pesan terkirim).
     area_name = None
     regional_name = None
     with db() as conn, conn.cursor() as cur:
         if inp.area_id:
             cur.execute("SELECT name FROM areas WHERE id = %s", (inp.area_id,))
             row = cur.fetchone()
-            if row:
-                area_name = row["name"]
+            if not row:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"area_id {inp.area_id} tidak dikenal — pakai ID dari GET /api/areas",
+                )
+            area_name = row["name"]
         if inp.regional_id:
             cur.execute("SELECT name FROM regionals WHERE id = %s", (inp.regional_id,))
             row = cur.fetchone()
-            if row:
-                regional_name = row["name"]
+            if not row:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"regional_id {inp.regional_id} tidak dikenal — pakai ID dari "
+                           f"GET /api/areas/{inp.area_id or '?'}/regionals",
+                )
+            regional_name = row["name"]
 
     header = render_header([m.model_dump() for m in inp.mentions], jenis_key, custom_header=inp.custom_header) if (inp.mentions or inp.custom_header) else ""
     body_text = render_case_text(
@@ -1167,9 +1179,10 @@ async def create_case(inp: CaseIn, request: Request,
                      mentions      = EXCLUDED.mentions,
                      group_id      = EXCLUDED.group_id,
                      status        = 'open',
+                     deleted_at    = NULL,
                      updated_at    = now()
                RETURNING id, case_code""",
-            (case_code, jenis_key, f.get("detail_case", "")[:120],
+            (case_code, jenis_key, (f.get("detail_case") or "")[:120],
              json.dumps(f), text, wa_mid,
              inp.area_id, inp.regional_id, sumber_ticket_id,
              jenis_case_id, inp.asal_grapari, mentions_json, group["id"]),

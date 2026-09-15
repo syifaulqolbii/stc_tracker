@@ -502,3 +502,43 @@ Selain INC (regex), ketikan manual kode non-INC yang TERDAFTAR juga terdeteksi:
   case-insensitive) → langsung ter-link, source `rule`, tanpa LLM
 - Contoh: `proses 1-SSNKPOA` ✅ · `kode 11-SSNKPOA2` ❌ (substring, ditolak boundary check)
 - Tanpa keyword status → tidak dijalankan (hemat query; pesan chat biasa aman)
+
+---
+
+# 🩹 FIX "CASE TERKIRIM TAPI TIDAK TER-RECORD" (v1.16.0, 15 Sep 2026)
+
+Akar masalah: di `create_case`, `waha_send` (kirim pesan ke grup) dieksekusi
+SEBELUM INSERT ke `cases`. Kegagalan DB SETELAH kirim = pesan sudah masuk grup,
+tapi case tidak tercatat (HTTP 500, silent data loss di sisi tracker).
+
+| # | Trigger lama | Fix |
+|---|---|---|
+| 1 | `area_id`/`regional_id` tak dikenal → lolos render (area tinggal hilang dari teks), INSERT gagal FK setelah pesan masuk grup → 500 | Divalidasi di `_render_case_payload` (dipakai `/cases`, `/preview`, `/test-send`) → **422 sebelum WAHA dipanggil** |
+| 2 | `fields.detail_case: null` → `None[:120]` TypeError setelah kirim → 500 | `(f.get("detail_case") or "")[:120]` → 201, title kosong |
+| 3 | Re-FU `case_code` yang ter-soft-delete → upsert "sukses" 201 tapi row tetap invisible (`deleted_at != NULL`) | `ON CONFLICT ... DO UPDATE` kini `deleted_at = NULL` — case muncul kembali |
+
+Catatan operasional: `/test-send` memang TIDAK membuat row case (by design).
+Kalau ada pesan case di grup tanpa row case, cek dulu: apakah pesan itu hasil
+test-send? (`wa_groups.is_default` = grup tujuan test.)
+
+## Re-verify pasca-deploy
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. area_id tidak dikenal → 422, pesan TIDAK masuk grup:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $API/api/cases \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"group_id":2,"jenis_case":"Non Order","area_id":999,"fields":{"ticket_remedy":"INC000000001"}}'
+# → 422 (sebelumnya: pesan masuk grup lalu 500)
+
+# 2. detail_case null → 201, case tercatat:
+curl -s -X POST $API/api/cases -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"group_id":2,"jenis_case":"Non Order","fields":{"ticket_remedy":"INC000000002","detail_case":null}}'
+# → 201 dengan case_code INC000000002
+
+# 3. (Opsional, hati-hati di prod) re-FU case yang pernah di-delete:
+#    kirim ulang case_code yang sudah di-soft-delete → case harus muncul lagi di dashboard.
+```
+

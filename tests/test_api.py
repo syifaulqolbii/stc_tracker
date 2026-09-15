@@ -1989,3 +1989,133 @@ class TestTicketRemedyValidation:
         r2 = tc.post("/api/cases/test-send", json=body)
         assert r1.status_code == 422
         assert r2.status_code == 422
+
+
+class TestCaseNotRecordedFixes:
+    """v1.16 — fix 'case terkirim ke grup tapi tidak ter-record di DB'.
+
+    Tiga akar masalah di create_case:
+    1. area_id/regional_id tidak divalidasi sebelum waha_send → FK violation
+       SETELAH pesan masuk grup (500, case hilang).
+    2. fields.detail_case = null → None[:120] TypeError setelah kirim.
+    3. ON CONFLICT (case_code) DO UPDATE tidak clear deleted_at → case
+       yang di-re-create dari case_code ter-soft-delete tetap invisible.
+    """
+
+    BODY = {
+        "group_id": 1,
+        "jenis_case": "Non Order",
+        "fields": {"ticket_remedy": "INC000777001", "detail_case": "tes"},
+    }
+
+    # ---------------------------------------------------------------- fix #1
+
+    def test_unknown_area_id_rejected_422_before_send(self, mock_waha):
+        """area_id tak dikenal → 422 SEBELUM WAHA dipanggil (pesan tidak terkirim)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            None,                                   # SELECT area → tidak ditemukan
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={**self.BODY, "area_id": 999})
+        assert r.status_code == 422
+        assert "area_id 999" in str(r.json()["detail"])
+        mock_waha.post.assert_not_called()  # WAHA TIDAK boleh terpanggil
+
+    def test_unknown_regional_id_rejected_422_before_send(self, mock_waha):
+        """regional_id tak dikenal → 422 SEBELUM WAHA dipanggil."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"name": "Area 1"},                     # area lookup OK
+            None,                                   # regional lookup → tidak ditemukan
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={**self.BODY, "area_id": 1, "regional_id": 999})
+        assert r.status_code == 422
+        assert "regional_id 999" in str(r.json()["detail"])
+        mock_waha.post.assert_not_called()
+
+    def test_known_area_regional_still_passes(self, mock_waha):
+        """area_id + regional_id valid → tetap 201 (regresi guard)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"name": "Area 1"},                     # area lookup
+            {"name": "Regional 2"},                 # regional lookup
+            {"id": 42, "case_code": "INC000777001"},  # INSERT RETURNING
+            None,                                   # INSERT wa_messages
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={**self.BODY, "area_id": 1, "regional_id": 2})
+        assert r.status_code == 201
+
+    def test_area_validation_applies_to_test_send(self, mock_waha):
+        """test-send dengan area_id tak dikenal juga ditolak 422 (tidak kirim ke grup test)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 5, "name": "Test Development", "chat_id": "120363999@g.us"},  # _get_default_group
+            None,                                   # area lookup → tidak ditemukan
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases/test-send", json={
+                "jenis_case": "Non Order", "area_id": 999,
+                "fields": {"ticket_remedy": "INC000777002"},
+            })
+        assert r.status_code == 422
+        mock_waha.post.assert_not_called()
+
+    # ---------------------------------------------------------------- fix #2
+
+    def test_null_detail_case_still_recorded(self, mock_waha):
+        """fields.detail_case = null → 201, case tetap ter-record (bukan 500)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"id": 43, "case_code": "INC000777003"},  # INSERT RETURNING
+            None,                                   # INSERT wa_messages
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "group_id": 1, "jenis_case": "Non Order",
+                "fields": {"ticket_remedy": "INC000777003", "detail_case": None},
+            })
+        assert r.status_code == 201
+        # title INSERT harus string kosong, bukan None
+        insert_call = [c for c in mock_cursor.execute.call_args_list
+                      if "INSERT INTO cases" in c.args[0]][0]
+        assert insert_call.args[1][2] == ""  # param ke-3 = title
+
+    # ---------------------------------------------------------------- fix #3
+
+    def test_upsert_clears_deleted_at(self, mock_waha):
+        """Re-create case_code yang ter-soft-delete → deleted_at di-clear di SQL upsert."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"id": 44, "case_code": "INC000777004"},  # INSERT RETURNING
+            None,                                   # INSERT wa_messages
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "group_id": 1, "jenis_case": "Non Order",
+                "fields": {"ticket_remedy": "INC000777004", "detail_case": "re-create"},
+            })
+        assert r.status_code == 201
+        insert_sql = [c for c in mock_cursor.execute.call_args_list
+                      if "INSERT INTO cases" in c.args[0]][0].args[0]
+        assert "ON CONFLICT (case_code) DO UPDATE" in insert_sql
+        assert "deleted_at" in insert_sql
+        assert "deleted_at = NULL" in insert_sql or "deleted_at    = NULL" in insert_sql

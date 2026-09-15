@@ -224,12 +224,12 @@ Aturan:
 - Field **required** per jenis case: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). Field lain **opsional**.
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
-- `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih.
+- `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih. ID tak dikenal → **422** (v1.16 — divalidasi **sebelum** pesan dikirim, supaya case tidak masuk grup tanpa tercatat di DB).
 - `fields.link_evidence` — array of object `{"label": "...", "url": "..."}`. `url` bisa string tunggal ATAU array (banyak link untuk satu label). `label` opsional (kalau kosong, link dirender polos). Kosongkan array jika tidak ada evidence. Backward compatible: string URL lama tetap diterima.
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
 - `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
-- Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error.
+- Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error. Termasuk case yang sudah di-soft-delete (v1.16 — `deleted_at` di-clear, case muncul kembali di dashboard).
 
 **Format pesan WhatsApp (otomatis) — compact:**
 ```
@@ -1482,6 +1482,12 @@ https://imgur.com/app_error
 - **`fields.case_id` kini dirender ke pesan WA** dengan label sendiri: baris `Case ID : <kode>` (posisi tepat setelah Ticket Remedy). Sebelumnya key ini hanya jadi `case_code` di DB tanpa tampil di pesan.
 - Konvensi yang benar: kode tiket Remedy → `ticket_remedy`; kode internal/non-INC → `case_id`. Keduanya bisa dikirim sekaligus (case_code prioritas ticket_remedy).
 - `case_code` di DB tetap otomatis: dari `ticket_remedy` atau fallback `case_id` (di-uppercase).
+
+### v1.16 (15 September 2026) — fix "case terkirim ke grup tapi tidak ter-record di DB"
+Tiga perbaikan di `POST /api/cases` / `/preview` / `/test-send` (akar masalah: DB write terjadi SETELAH pesan dikirim ke grup, kegagalan DB = pesan sudah masuk grup tanpa row case):
+- **`area_id` / `regional_id` tak dikenal → `422`** (sebelumnya lolos diam-diam → INSERT gagal FK *setelah* pesan masuk grup → 500, case hilang). Validasi terjadi SEBELUM kirim — berlaku di ketiga endpoint. Pesan: `area_id 999 tidak dikenal — pakai ID dari GET /api/areas`.
+- **`fields.detail_case: null` diterima** (sebelumnya `None[:120]` TypeError setelah pesan terkirim → 500, case hilang). Kini title case = string kosong.
+- **Re-FU case_code yang ter-soft-delete kini memunculkan case kembali**: `ON CONFLICT (case_code) DO UPDATE` ikut meng-clear `deleted_at` + reset `status='open'`. Sebelumnya upsert "sukses" 201 tapi row tetap `deleted_at != NULL` → case invisible di dashboard/webhook/reminder.
 
 ### v1.15 (14 September 2026) — fix reply-chain reminder + mention rewrite
 Perbaikan dari temuan tracing case #15 (lihat `docs/findings-2026-09-14-case-15.md`). **Tidak ada perubahan kontrak endpoint untuk frontend**, tapi respons jadi lebih informatif:
