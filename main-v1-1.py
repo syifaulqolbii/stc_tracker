@@ -1114,6 +1114,8 @@ class ReplyIn(BaseModel):
 REPLY_MIMES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
                "video/mp4": ".mp4", "application/pdf": ".pdf"}
 
+REPLY_MAX_BYTES = 5 * 1024 * 1024  # maks decoded bytes per file (5 MB)
+
 
 async def waha_send_media(endpoint: str, payload: dict) -> str | None:
     try:
@@ -1641,6 +1643,20 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
     group = _get_group(case["group_id"]) if case.get("group_id") else None
     if not group:
         raise HTTPException(status_code=400, detail="Case tidak punya grup aktif")
+    # validation-first: semua attachment divalidasi + decode SEBELUM ada send apa pun,
+    # supaya mimetype/base64/size yang invalid tidak meninggalkan partial sends.
+    decoded: list[tuple[str, bytes]] = []
+    for att in inp.attachments:
+        ext = REPLY_MIMES.get((att.mimetype or "").lower())
+        if not ext:
+            raise HTTPException(status_code=422, detail=f"mimetype {att.mimetype} tidak didukung")
+        try:
+            raw = base64.b64decode(att.data_base64, validate=True)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"data_base64 {att.filename} bukan base64 valid")
+        if len(raw) > REPLY_MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"{att.filename} melebihi 5 MB")
+        decoded.append((ext, raw))
     sent: list[str] = []
     if inp.message:
         mid = await waha_send(inp.message,
@@ -1653,16 +1669,7 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
                 cur.execute("UPDATE wa_messages SET case_id = %s WHERE wa_message_id = %s", (case_id, mid))
                 conn.commit()
             sent.append(mid)
-    for att in inp.attachments:
-        ext = REPLY_MIMES.get((att.mimetype or "").lower())
-        if not ext:
-            raise HTTPException(status_code=422, detail=f"mimetype {att.mimetype} tidak didukung")
-        try:
-            raw = base64.b64decode(att.data_base64, validate=True)
-        except Exception:
-            raise HTTPException(status_code=422, detail=f"data_base64 {att.filename} bukan base64 valid")
-        if len(raw) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"{att.filename} melebihi 5 MB")
+    for (att, (ext, raw)) in zip(inp.attachments, decoded):
         # ponytail: simpan apa adanya tanpa konversi; JPEG disarankan tapi tidak dipaksa
         fname = f"{uuid.uuid4().hex}{ext}"
         with open(os.path.join(MEDIA_DIR, fname), "wb") as f:

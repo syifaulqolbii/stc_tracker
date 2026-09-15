@@ -2377,3 +2377,46 @@ class TestCaseReplies:
         with self._reply_client([]) as (tc, _):
             r = tc.post("/api/cases/6/replies", json={"reply_to_wa_message_id": "solver1"})
             assert r.status_code == 422
+
+    def test_reply_oversize_attachment_rejected(self, mock_waha, monkeypatch):
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "REPLY_MAX_BYTES", 4)
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "besar.pdf", "mimetype": "application/pdf",
+                                 "data_base64": _b64.b64encode(b"fakejpeg").decode()}]})
+            assert r.status_code == 413
+            mock_waha.post.assert_not_called()
+
+    def test_reply_unsupported_mimetype_rejected(self, mock_waha):
+        import base64 as _b64
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "a.txt", "mimetype": "text/plain",
+                                 "data_base64": _b64.b64encode(b"hi").decode()}]})
+            assert r.status_code == 422
+            mock_waha.post.assert_not_called()
+
+    def test_reply_invalid_base64_rejected(self, mock_waha):
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "b.jpg", "mimetype": "image/jpeg",
+                                 "data_base64": "!!!bukan-base64!!!"}]})
+            assert r.status_code == 422
+            mock_waha.post.assert_not_called()
+
+    def test_reply_four_attachments_rejected(self, mock_waha):
+        import base64 as _b64
+        small = _b64.b64encode(b"x").decode()
+        with self._reply_client([]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": f"f{i}.jpg", "mimetype": "image/jpeg",
+                                 "data_base64": small} for i in range(4)]})
+            assert r.status_code == 422
+            mock_waha.post.assert_not_called()
