@@ -502,6 +502,35 @@ Content-Type: application/json
 
 ---
 
+### 3.6a `POST /api/cases/{id}/replies` — Balas pesan solver dari web
+
+**Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
+
+**Request:**
+```json
+{
+  "message": "siap, kami cek dulu ya",
+  "reply_to_wa_message_id": "false_..._BBB",
+  "attachments": [
+    {"filename": "bukti.jpg", "mimetype": "image/jpeg", "data_base64": "<base64>"}
+  ],
+  "mentions": [{"number": "6281113021236", "name": "Mas Habib"}]
+}
+```
+
+- `reply_to_wa_message_id` wajib — ambil dari `messages[].wa_message_id` di timeline `GET /api/cases/{id}` (pesan solver yang dibalas, bukan root). Milik case lain → `422`.
+- `attachments` maks 3 file (>3 → `422`), 5 MB per file decoded (>5 MB → `413`). MIME: `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `application/pdf` (lainnya → `422`).
+- Image terkirim via WAHA `sendImage` (caption = message), lainnya via `sendFile` (caption = nama file).
+- Salah satu dari `message` / `attachments` wajib diisi (keduanya kosong → `422`).
+
+**Response `200`:** `{ "ok": true, "wa_message_ids": ["..."] }`
+
+**Error:** `404` case tidak ada · `422` reply_to bukan pesan case ini / MIME tak didukung / base64 invalid / kosong / >3 file · `413` file > 5 MB · `502` WAHA gagal.
+
+**Alur FE:** tombol **Balas** di tiap bubble solver di timeline → form (textarea + picker ≤3 file) → encode base64 → POST → refresh timeline.
+
+---
+
 ### 3.7 `POST /api/crawl` — Backfill histori grup (admin)
 
 **Headers:**
