@@ -227,7 +227,8 @@ Aturan:
 - `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih. ID tak dikenal → **422** (v1.16 — divalidasi **sebelum** pesan dikirim, supaya case tidak masuk grup tanpa tercatat di DB).
 - `fields.link_evidence` — array of object `{"label": "...", "url": "..."}`. `url` bisa string tunggal ATAU array (banyak link untuk satu label). `label` opsional (kalau kosong, link dirender polos). Kosongkan array jika tidak ada evidence. Backward compatible: string URL lama tetap diterima.
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
-- `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
+- **Auto-mention `@<nomor>` yang diketik manual** (v1.17): token `@628xxx` di custom_header/detail_case OTOMATIS ikut dikirim sebagai mention WAHA — teks polos `@angka` tanpa `mentionedJid` tidak pernah ngetag di WhatsApp (root cause case INC000024096448). Nomor hasil extract disimpan ke `cases.mentions` (`name: null`) supaya reminder cron/manual ikut ngetag. Duplikat dengan mentions dropdown di-merge (satu entry). Token tanpa `@` (MSISDN/indihome/INC) dan `@nama` tidak disentuh.
+- `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. **(v1.17) `{phone}` tapi `mentions` kosong → `422`** (`custom_header mengandung {phone} tapi mentions kosong — pilih solver dari dropdown atau hapus token {phone}`). Sebelumnya literal `{phone}` ikut terkirim ke grup. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
 - `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error. Termasuk case yang sudah di-soft-delete (v1.16 — `deleted_at` di-clear, case muncul kembali di dashboard).
 
@@ -1475,6 +1476,12 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.17 (16 September 2026) — fix "mention tidak ngetag" (root cause: mentions kosong)
+Akar masalah case INC000024096448: pesan berisi literal `@628119298880` (diketik manual di custom_header) tapi `cases.mentions = []` — tanpa `mentionedJid`, teks `@angka` tidak pernah ngetag di WhatsApp (bukan bug grup/LID — participants kedua grup `@c.us` semua, mention by nomor terbukti work di case INC2313132123).
+- **Auto-extract `@<nomor>` dari teks** di `waha_send` (satu titik sentral — cover create/test-send/reminder manual/cron): union mentions dropdown + token manual, dedupe. `create_case` juga menyimpan hasil merge (`name: null`) ke `cases.mentions` supaya reminder ikut ngetag.
+- **`custom_header` ber-token `{phone}` tapi `mentions` kosong → `422`** (berlaku di `/cases`, `/preview`, `/test-send`). Sebelumnya literal `{phone}` ikut terkirim.
+- Kontrak request tidak berubah. Tidak ada migrasi schema (`mentions` JSONB sudah fleksibel).
 
 ### v1.16 (14 September 2026) — ticket_remedy wajib format INC + field case_id
 ⚠️ **BREAKING untuk FE** (hanya jika selama ini mengirim kode non-INC di `ticket_remedy`):

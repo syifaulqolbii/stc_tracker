@@ -170,6 +170,8 @@ curl -s -X POST https://API_DOMAIN/api/cases \
 ```
 **Sesuai:** WA mention nomor, header custom terpakai.
 
+> **Troubleshooting "mention tidak ngetag" (v1.17):** teks `@628xxx` di pesan **bukan** mention — WhatsApp butuh `mentionedJid` di payload. Diagnosis: cek kolom `cases.mentions` untuk case terkait — kosong (`[]`) = nomor hanya terketik di custom header tanpa masuk array mentions (seperti case INC000024096448). Sejak v1.17 backend auto-extract token `@<digit>` dari teks ke mentions; pesan lama tetap polos (tidak di-backfill). Tagging MENUNTUT nomor ada di array mentions — mengetik `@628xxx` manual dari HP tanpa mention picker juga tidak ngetag (hati-hati saat test manual).
+
 ### 3f. Media gambar+caption
 Kirim gambar dengan caption `proses INCTEST001` di grup → cek `case_detail`:
 ```bash
@@ -540,5 +542,41 @@ curl -s -X POST $API/api/cases -H "X-API-Key: $KEY" -H 'Content-Type: applicatio
 
 # 3. (Opsional, hati-hati di prod) re-FU case yang pernah di-delete:
 #    kirim ulang case_code yang sudah di-soft-delete → case harus muncul lagi di dashboard.
+
+---
+
+# 🩹 FIX "MENTION TIDAK NGETAG" (v1.17.0, 16 Sep 2026)
+
+Akar masalah (case INC000024096448): pesan berisi literal `@628119298880`
+(diketik manual di custom_header) tapi `cases.mentions = []`. Tanpa
+`mentionedJid`, teks `@angka` = teks polos — tidak pernah ngetag. Bukan bug
+grup/LID (participants kedua grup `@c.us` semua; mention by nomor terbukti
+work di case INC2313132123).
+
+Fix: backend auto-extract token `@<digit>` dari teks final ke payload WAHA
+(union + dedupe dengan mentions dropdown), disimpan juga ke `cases.mentions`
+(`name: null`) supaya reminder ikut ngetag. `{phone}` tanpa mentions → 422.
+
+## Re-verify pasca-deploy
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. {phone} tanpa mentions → 422, pesan TIDAK masuk grup:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $API/api/cases/preview \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Non Order","mentions":[],"custom_header":"Halo {phone}","fields":{"ticket_remedy":"INC000000003"}}'
+# → 422
+
+# 2. Test-send dengan @nomor manual ke grup TEST → cek WA: mention render pushname:
+curl -s -X POST $API/api/cases/test-send -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"jenis_case":"Non Order","mentions":[],"custom_header":"Coba @628119298880 ya","fields":{"ticket_remedy":"INC000000004"}}'
+# → 200; di grup test, @628119298880 harusnya biru (tag), bukan teks polos
+
+# 3. Cek mentions tersimpan (setelah case real):
+# docker exec moban-db psql -U postgres -d moban -c \
+#   "SELECT case_code, mentions FROM cases ORDER BY created_at DESC LIMIT 3;"
+```
 ```
 

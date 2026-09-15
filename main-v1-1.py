@@ -312,8 +312,11 @@ async def waha_send(text: str, mentions: list[str] | None = None,
                     reply_to: str | None = None,
                     chat_id: str | None = None) -> str | None:
     payload = {"session": WAHA_SESSION, "chatId": chat_id or WA_GROUP_ID, "text": text}
-    if mentions:
-        payload["mentions"] = mentions
+    if mentions or extract_mention_numbers(text):
+        # Union mentions eksplisit + token @<nomor> yang diketik manual di teks
+        # (fix case-23: teks polos tanpa mentionedJid tidak pernah ngetag).
+        payload["mentions"] = list(dict.fromkeys(
+            [*(mentions or []), *extract_mention_numbers(text)]))
     if reply_to:
         payload["reply_to"] = reply_to
     try:
@@ -529,6 +532,26 @@ async def rewrite_mentions(body: str | None) -> str | None:
         return body
 
 
+MENTION_TOKEN_RE = re.compile(r"@(\d{5,})")
+
+
+def extract_mention_numbers(text: str | None) -> list[str]:
+    """Extract token `@<digit>` yang diketik manual di teks (fix case-23).
+
+    Teks polos `@628xxx` TANPA mentionedJid tidak pernah ngetag di WhatsApp.
+    Helper ini menjadikan teks sebagai sumber kebenaran terakhir: token yang
+    sudah dirender tapi belum masuk mentions eksplisit dikembalikan agar ikut
+    dikirim ke WAHA. Tidak match: nomor tanpa `@` (MSISDN/indihome/INC),
+    `@nama` (pushname), email. Ordered-unique, tidak pernah raise.
+    """
+    if not text or "@" not in text:
+        return []
+    try:
+        return list(dict.fromkeys(MENTION_TOKEN_RE.findall(text)))
+    except Exception:
+        return []
+
+
 def find_case_by_code(code: str):
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM cases WHERE case_code = %s AND deleted_at IS NULL", (code,))
@@ -634,6 +657,14 @@ def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
 
     Return: (text, jenis_key)
     """
+    if inp.custom_header and "{phone}" in inp.custom_header and not inp.mentions:
+        # custom_header menuntut slot mention tapi tidak ada nomor terpilih —
+        # tolak sebelum kirim supaya literal "{phone}" tidak masuk grup.
+        raise HTTPException(
+            status_code=422,
+            detail="custom_header mengandung {phone} tapi mentions kosong — pilih solver "
+                   "dari dropdown (atau hapus token {phone})",
+        )
     jenis_key = _resolve_jenis_case_name(inp.jenis_case)
     f = inp.fields
 
@@ -1156,11 +1187,19 @@ async def create_case(inp: CaseIn, request: Request,
 
     text, jenis_key = _render_case_payload(inp)
 
-    wa_mid = await waha_send(text, mentions=[m.number for m in inp.mentions] or None,
+    # Merge mentions eksplisit (dropdown) + token @<nomor> yang diketik manual
+    # di teks (fix case-23). Extracted disimpan name=None agar reminder ikut
+    # ngetag solver yang diketik manual sekalipun tidak lewat dropdown.
+    known = {m.number: m.name for m in inp.mentions}
+    for num in extract_mention_numbers(text):
+        known.setdefault(num, None)
+    merged_mentions = [{"number": num, "name": known[num]} for num in known]
+
+    wa_mid = await waha_send(text, mentions=[m["number"] for m in merged_mentions] or None,
                              chat_id=group["chat_id"])
 
     # Build mentions JSON for storage
-    mentions_json = json.dumps([{"number": m.number, "name": m.name} for m in inp.mentions]) if inp.mentions else "[]"
+    mentions_json = json.dumps(merged_mentions)
 
     with db() as conn, conn.cursor() as cur:
         cur.execute(

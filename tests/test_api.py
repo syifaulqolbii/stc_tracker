@@ -2107,7 +2107,7 @@ class TestCaseNotRecordedFixes:
             None,                                   # INSERT wa_messages
         ])
         with patch.object(main_module, "db", return_value=mock_conn), \
-             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
             tc = TestClient(main_module.app)
             r = tc.post("/api/cases", json={
                 "group_id": 1, "jenis_case": "Non Order",
@@ -2119,3 +2119,155 @@ class TestCaseNotRecordedFixes:
         assert "ON CONFLICT (case_code) DO UPDATE" in insert_sql
         assert "deleted_at" in insert_sql
         assert "deleted_at = NULL" in insert_sql or "deleted_at    = NULL" in insert_sql
+
+
+# ---------------------------------------------------------------- fix case-23
+# Nomor yang diketik manual sebagai "@<nomor>" di custom_header/detail WAJIB
+# ikut masuk array mentions WAHA — teks polos @angka tanpa mentionedJid tidak
+# pernah ngetag di WhatsApp (root cause: case INC000024096448 mentions=[]).
+
+class TestManualMentionExtraction:
+    """@<nomor> yang diketik manual di teks → auto-mention di payload WAHA."""
+
+    def _create_seq(self, case_id=50, case_code="INC000777100"):
+        return [
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"id": case_id, "case_code": case_code},  # INSERT RETURNING
+            None,                                   # INSERT wa_messages
+        ]
+
+    def test_create_case_manual_mention_in_custom_header(self, mock_waha):
+        """custom_header berisi literal @628xxx, mentions=[] → payload WAHA mentions terisi."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=self._create_seq())
+        with patch.object(main_module, "db", return_value=mock_conn), \
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "group_id": 1, "jenis_case": "Non Order",
+                "mentions": [],
+                "custom_header": "Punten rekan @628119298880, moban untuk retry order berikut",
+                "fields": {"ticket_remedy": "INC000777100", "detail_case": "retry"},
+            })
+        assert r.status_code == 201
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["mentions"] == ["628119298880"]
+        # merge juga tersimpan ke DB → reminder ikut ngetag
+        insert_call = [c for c in mock_cursor.execute.call_args_list
+                       if "INSERT INTO cases" in c.args[0]][0]
+        import json as _json
+        stored = _json.loads(insert_call.args[1][11])
+        assert {"number": "628119298880", "name": None} in stored
+
+    def test_create_case_manual_mention_merged_with_dropdown(self, mock_waha):
+        """nomor sama di dropdown + diketik manual → tidak duplikat di payload."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=self._create_seq(51, "INC000777101"))
+        with patch.object(main_module, "db", return_value=mock_conn), \
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases", json={
+                "group_id": 1, "jenis_case": "Non Order",
+                "mentions": [{"number": "628119298880", "name": "Solver"}],
+                "custom_header": "Punten rekan {phone} dan @628119298880, mohon bantu",
+                "fields": {"ticket_remedy": "INC000777101"},
+            })
+        assert r.status_code == 201
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["mentions"] == ["628119298880"]
+
+    def test_preview_phone_placeholder_without_mentions_rejected(self, client):
+        """custom_header ber-token {phone} tapi mentions kosong → 422 (tidak kirim literal)."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [{"id": 1}]
+        r = tc.post("/api/cases/preview", json={
+            "jenis_case": "Non Order",
+            "mentions": [],
+            "custom_header": "Halo {phone} mohon bantuan",
+            "fields": {"ticket_remedy": "INC000777102"},
+        })
+        assert r.status_code == 422
+        assert "{phone}" in r.json()["detail"]
+
+    def test_create_phone_placeholder_without_mentions_rejected(self, client, mock_waha):
+        """aturan 422 yang sama berlaku di POST /api/cases — WAHA tidak dipanggil."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = [
+            {"id": 1},                              # _resolve_jenis_case
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},  # _get_group
+            {"id": 1},                              # jenis lookup di _render_case_payload
+        ]
+        r = tc.post("/api/cases", json={
+            "group_id": 1, "jenis_case": "Non Order",
+            "mentions": [],
+            "custom_header": "Halo {phone} mohon bantuan",
+            "fields": {"ticket_remedy": "INC000777103"},
+        })
+        assert r.status_code == 422
+        mock_waha.post.assert_not_called()
+
+    def test_test_send_manual_mention_extracted(self, mock_waha):
+        """test-send dengan @nomor manual → payload WAHA mentions terisi, tanpa write DB."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 5, "name": "Test Development", "chat_id": "120363999@g.us",
+             "is_default": True},
+            {"id": 1},                              # jenis lookup di _render_case_payload
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases/test-send", json={
+                "jenis_case": "Non Order",
+                "mentions": [],
+                "custom_header": "Coba @6287700034866 ya",
+                "fields": {"ticket_remedy": "INC000777104"},
+            })
+        assert r.status_code == 200
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["mentions"] == ["6287700034866"]
+
+    def test_reminder_custom_message_manual_mention_extracted(self, mock_waha):
+        """reminder custom berisi @628xxx manual → payload mentions terisi."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[
+            {"id": 6, "status": "open", "group_id": 1, "wa_message_id": "case_mid_123",
+             "mentions": [], "reminder_count": 0},
+            {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+            None,  # UPDATE
+            None,  # INSERT log
+        ])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+            patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            tc = TestClient(main_module.app)
+            r = tc.post("/api/cases/6/reminder", json={
+                "message": "mohon dibantu @628119298880 ya 🙏",
+            })
+        assert r.status_code == 200
+        payload = mock_waha.post.call_args[1]["json"]
+        assert payload["mentions"] == ["628119298880"]
+
+
+class TestExtractMentionNumbers:
+    """Unit: extract_mention_numbers() hanya menangkap token @<digit>."""
+
+    def test_basic_and_dedupe(self):
+        out = main_module.extract_mention_numbers(
+            "Punten rekan @628119298880 dan @628119298880, mohon @6287700034866"
+        )
+        assert out == ["628119298880", "6287700034866"]
+
+    def test_ignores_non_mention_tokens(self):
+        out = main_module.extract_mention_numbers(
+            "Ticket Remedy : INC000024096448\n"
+            "MSISDN : 6281232571769\n"          # tanpa @ → bukan mention
+            "Nomer Indihome : 146550117520\n"  # tanpa @ → bukan mention
+            "tolong selesaikan @syifaulqolbi\n"  # nama pushname → bukan mention
+            "email admin@mail.com ya"            # email → bukan mention
+        )
+        assert out == []
+
+    def test_ignores_short_tokens_and_matches_in_detail(self):
+        out = main_module.extract_mention_numbers(
+            "detail hubungi @6281232571769 (@12 abaikan, 5 digit? @12345 ya)"
+        )
+        assert "6281232571769" in out
+        assert "12" not in out
+        assert "12345" in out
