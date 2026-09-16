@@ -531,6 +531,125 @@ Content-Type: application/json
 
 > ⚠️ **Selalu balas lewat web, jangan dari HP bot.** Pesan yang diketik manual dari akun bot (`fromMe=true`) di-skip webhook sehingga tidak tercatat di `wa_messages` — reply-chain putus dan balasan solver berikutnya tidak ter-link ke case. Pesan via endpoint ini dicatat (`from_me=true`, `quoted_id` = pesan solver, `case_id` terisi) sehingga rantai lanjut (`source=chain`).
 
+### Contoh payload per use case `POST /api/cases/{id}/replies`
+
+Semua contoh memakai contoh case ini: `GET /api/cases/42` mengembalikan timeline berisi pesan solver:
+
+```json
+{
+  "messages": [
+    { "wa_message_id": "true_120363xxx@g.us_AAA", "quoted_id": null, "author": null, "from_me": true, "body": "punten rekan ... (root case)" },
+    { "wa_message_id": "false_6281113021236@lid_BBB", "quoted_id": "3EB0A1B2C3", "author": "6281113021236@lid", "author_name": "Mas Habib", "from_me": false, "body": "minta screenshot bukti pembayarannya dong" }
+  ]
+}
+```
+
+`reply_to_wa_message_id` = `"false_6281113021236@lid_BBB"` (pesan solver, `from_me=false`).
+
+---
+
+#### UC-1 · Balas teks saja (paling umum)
+
+**Request:**
+```json
+{
+  "message": "siap mas, kami cek dulu ya",
+  "reply_to_wa_message_id": "false_6281113021236@lid_BBB"
+}
+```
+
+**Response `200`:**
+```json
+{ "ok": true, "wa_message_ids": ["true_120363xxx@g.us_DDD"] }
+```
+
+---
+
+#### UC-2 · Balas teks + 1 screenshot
+
+Encode file dulu — FE dari `<input type="file">` pakai `FileReader.readAsDataURL` (buang prefix `data:...;base64,`) atau `btoa`; PowerShell untuk test manual:
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\bukti.jpg")) | Set-Clipboard
+```
+
+**Request:**
+```json
+{
+  "message": "ini bukti pembayarannya",
+  "reply_to_wa_message_id": "false_6281113021236@lid_BBB",
+  "attachments": [
+    {"filename": "bukti-pembayaran.jpg", "mimetype": "image/jpeg", "data_base64": "/9j/4AAQSkZJRgABAQ..."}
+  ]
+}
+```
+
+Image -> WAHA `sendImage`, caption = `message`. Response sama (`wa_message_ids` berisi 2 id: 1 teks + 1 image).
+
+---
+
+#### UC-3 · Kirim dokumen PDF tanpa teks (media-only)
+
+`message` boleh dihilangkan — yang wajib minimal salah satu dari `message`/`attachments` terisi.
+
+**Request:**
+```json
+{
+  "reply_to_wa_message_id": "false_6281113021236@lid_BBB",
+  "attachments": [
+    {"filename": "rekap-tagihan-juni.pdf", "mimetype": "application/pdf", "data_base64": "JVBERi0xLjcK..."}
+  ]
+}
+```
+
+PDF/file non-image -> WAHA `sendFile`, caption = nama file. Response: `wa_message_ids` berisi 1 id.
+
+---
+
+#### UC-4 · Balas 2 gambar sekaligus (maks 3 file)
+
+**Request:**
+```json
+{
+  "message": "berikut 2 screenshot dari sistem internal",
+  "reply_to_wa_message_id": "false_6281113021236@lid_BBB",
+  "attachments": [
+    {"filename": "dashboard-1.png", "mimetype": "image/png", "data_base64": "iVBORw0KGgoAAAANS..."},
+    {"filename": "dashboard-2.png", "mimetype": "image/png", "data_base64": "iVBORw0KGgoAAAANS..."}
+  ]
+}
+```
+
+Response: `wa_message_ids` berisi 3 id (1 teks + 2 image). Setiap file dikirim sebagai reply terpisah ke pesan solver yang sama.
+
+---
+
+#### UC-5 · Balas dengan mention/tag solver
+
+WAHA ngetag kalau **nomor ada di teks** (`@628xxx`) — backend auto-extract semua token `@<nomor>` (`@628…`, `@+62…` dengan spasi/strip/titik dinormalisasi). Field `mentions` opsional (untuk merge), jadi cukup ketik `@628xxx` di `message`:
+
+**Request:**
+```json
+{
+  "message": "@6281113021236 mohon cek ulang konfigurasinya ya mas",
+  "reply_to_wa_message_id": "false_6281113021236@lid_BBB"
+}
+```
+
+Kalau mention dikirim via dropdown FE (bukan diketik), isi `mentions: [{"number": "6281113021236", "name": "Mas Habib"}]` + tulis `@6281113021236` di teks. **Catatan:** mention hanya berjalan di pesan **teks** — reply media-only mengabaikan `mentions`.
+
+---
+
+#### UC-6 · Contoh error yang akan ditemui FE
+
+| Situation | Request (intinya) | Response |
+|---|---|---|
+| reply_to salah case | `"reply_to_wa_message_id": "false_..._XXX"` milik case 43, dikirim ke `/api/cases/42/replies` | `422 {"detail": "reply_to_wa_message_id bukan pesan case ini"}` |
+| MIME tidak didukung | `{"filename": "catatan.txt", "mimetype": "text/plain", ...}` | `422 {"detail": "mimetype text/plain tidak didukung"}` |
+| base64 rusak | `"data_base64": "!!!bukan-base64!!!"` | `422 {"detail": "data_base64 catatan.txt bukan base64 valid"}` |
+| file kebesaran | 1 file 6 MB decoded | `413 {"detail": "bukti.jpg melebihi 5 MB"}` |
+| 4 file | `attachments` berisi 4 entry | `422 {"detail": "Maksimal 3 file per balasan"}` |
+| body kosong | `{}` atau `{}` tanpa message & attachments | `422 {"detail": "message atau attachments wajib diisi"}` |
+
 ---
 
 ### 3.7 `POST /api/crawl` — Backfill histori grup (admin)
