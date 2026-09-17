@@ -337,7 +337,7 @@ X-API-Key: <key>
   }
 ]
 ```
-Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru"). Setiap row kini menyertakan `group_id` dan `group_name` (hasil join `wa_groups`) — pakai untuk badge/nama grup di dashboard (switcher).
+Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru"). Setiap row kini menyertakan `group_id` dan `group_name` (hasil join `wa_groups`) — pakai untuk badge/nama grup di dashboard (switcher). Sejak **v1.19**, setiap row juga menyertakan **`no_indihome`** (diambil dari `fields.no_indihome` case, `null` kalau tidak ada) — untuk kolom Nomor IH di list tanpa perlu fetch detail per case.
 
 ---
 
@@ -366,6 +366,7 @@ X-API-Key: <key>
     "sumber_ticket_id": 2,
     "jenis_case_id": 1,
     "asal_grapari": "GraPARI Bandung",
+    "no_indihome": "0211234567",
     "group_id": 1,
     "group_name": "Grup A",
     "area_name": "Area 1",
@@ -1626,6 +1627,9 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.19 (17 September 2026) — no_indihome di list `/api/cases`
+Setiap row `GET /api/cases` kini menyertakan field **`no_indihome`** (diambil langsung dari `fields->>'no_indihome'` di DB — bukan full `fields`). Nilai `null` kalau case tidak punya nomor IH. Tujuan: FE bisa menampilkan kolom Nomor Indihome di dashboard list tanpa harus memanggil `GET /api/cases/{id}` per case. Tidak ada perubahan request/filter — murni tambahan field di response.
 
 ### v1.18 (16 September 2026) — normalisasi format mention manusiawi
 Perluasan v1.17: token manual tidak hanya `@628xxx` polos — terima `@+62…`, `@081…`, separator spasi/strip/titik (`@+62 811-9298-880`), selalu dinormalisasi ke `62…` (`^62\d{7,14}$`). Token di bawah 7 digit / format tidak valid diabaikan. Validasi `422` `{phone}` tanpa mentions tetap berlaku.

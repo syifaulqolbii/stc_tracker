@@ -195,7 +195,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.18.0",
+    version="1.19.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1369,6 +1369,7 @@ def list_cases(
     sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
                     c.created_at, c.updated_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
+                    c.fields->>'no_indihome' AS no_indihome,
                     c.group_id, g.name AS group_name,
                     a.name AS area_name, r.name AS regional_name,
                     st.name AS sumber_ticket_name, jc.name AS jenis_case_name

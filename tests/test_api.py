@@ -2420,3 +2420,18 @@ class TestCaseReplies:
                                  "data_base64": small} for i in range(4)]})
             assert r.status_code == 422
             mock_waha.post.assert_not_called()
+
+
+# ============ Test no_indihome di list endpoint ============
+
+class TestCaseListNoIndihome:
+    def test_list_cases_includes_no_indihome_field(self, mock_waha):
+        """GET /api/cases harus mengekspos fields->>'no_indihome' (untuk FE list)."""
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[[]])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            response = tc.get("/api/cases")
+            assert response.status_code == 200
+        executed_sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert "fields->>'no_indihome' AS no_indihome" in executed_sql
