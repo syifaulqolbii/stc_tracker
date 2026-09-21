@@ -1417,9 +1417,9 @@ def list_cases(
             return cur.fetchall()
 
     with db() as conn, conn.cursor() as cur:
-        count_sql = sql.replace(
-            "SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,",
-            "SELECT COUNT(*)", 1)
+        # COUNT: buang seluruh SELECT-list, ambil dari FROM ke belakang
+        # (ganti hanya baris pertama TIDAK cukup — sisa kolom bikin SQL malformasi)
+        count_sql = "SELECT COUNT(*) " + sql[sql.index(" FROM cases c"):]
         # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
         count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
         cur.execute(count_sql, args)

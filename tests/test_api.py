@@ -2474,6 +2474,10 @@ class TestCaseListPagination:
         assert "SELECT COUNT(*)" in count_sql
         assert "ORDER BY" not in count_sql      # ORDER BY dibuang dari COUNT
         assert "LIMIT %s OFFSET %s" in select_sql
+        # SQL COUNT harus VALID: tidak ada sisa kolom setelah COUNT(*)
+        # (regression: replace baris pertama dulu meninggalkan kolom → syntax error di prod)
+        assert "c.created_at" not in count_sql and "c.id," not in count_sql
+        assert count_sql.count("SELECT") == 1
         assert executed[1][1] == [False, 50, 0]  # [include_deleted] + [limit, offset]
 
     def test_page2_limit10_offset_and_flags(self, mock_waha):
