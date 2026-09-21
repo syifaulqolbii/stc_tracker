@@ -2607,3 +2607,63 @@ class TestCaseExport:
             tc = TestClient(main_module.app)
             resp = tc.get("/api/cases/export.xlsx")
             assert resp.status_code == 401
+
+
+# ===================== Filter date range (v1.22) =====================
+
+class TestCaseDateRange:
+    """date_from/date_to di GET /api/cases dan /api/cases/export.xlsx."""
+
+    def test_list_filters_by_date_range(self, client):
+        tc, mock_cursor = client
+        tc.get("/api/cases?date_from=2026-06-01&date_to=2026-08-31")
+        sql = mock_cursor.execute.call_args[0][0]
+        args = mock_cursor.execute.call_args[0][1]
+        assert "c.created_at >= %s" in sql
+        assert "c.created_at < %s" in sql
+        # args: [include_deleted, from, to+1d]
+        assert args[1] == datetime(2026, 6, 1)
+        assert args[2] == datetime(2026, 9, 1)  # to + 1 hari = inklusif
+
+    def test_date_to_inclusive_same_day(self, client):
+        tc, mock_cursor = client
+        tc.get("/api/cases?date_to=2026-08-31")
+        args = mock_cursor.execute.call_args[0][1]
+        assert args[1] == datetime(2026, 9, 1)  # 31 Agustus jam 23:59 masih masuk
+
+    def test_only_date_from(self, client):
+        tc, mock_cursor = client
+        tc.get("/api/cases?date_from=2026-06-01")
+        args = mock_cursor.execute.call_args[0][1]
+        assert args[1] == datetime(2026, 6, 1)
+        assert len(args) == 2  # include_deleted + from
+
+    def test_invalid_format_returns_422(self, client):
+        tc, _ = client
+        for q in ("date_from=01-06-2026", "date_from=Juni", "date_to=2026-13-01"):
+            resp = tc.get(f"/api/cases?{q}")
+            assert resp.status_code == 422, q
+            assert "YYYY-MM-DD" in resp.json()["detail"]
+
+    def test_from_after_to_returns_422(self, client):
+        tc, _ = client
+        resp = tc.get("/api/cases?date_from=2026-08-31&date_to=2026-06-01")
+        assert resp.status_code == 422
+        assert "date_from" in resp.json()["detail"]
+
+    def test_export_uses_date_range(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchall.return_value = []
+        resp = tc.get("/api/cases/export.xlsx?date_from=2026-06-01&date_to=2026-08-31")
+        assert resp.status_code == 200
+        sql = mock_cursor.execute.call_args[0][0]
+        args = mock_cursor.execute.call_args[0][1]
+        assert "c.created_at >= %s" in sql
+        assert args[1] == datetime(2026, 6, 1)
+        assert args[2] == datetime(2026, 9, 1)
+
+    def test_combined_with_other_filters(self, client):
+        tc, mock_cursor = client
+        tc.get("/api/cases?status=open&group_id=2&date_from=2026-06-01")
+        args = mock_cursor.execute.call_args[0][1]
+        assert args == [False, "open", 2, datetime(2026, 6, 1)]

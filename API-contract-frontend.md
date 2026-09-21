@@ -1644,6 +1644,9 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.22 (21 September 2026) — filter rentang tanggal `date_from` / `date_to`
+Param baru di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`**: `date_from` & `date_to` (format `YYYY-MM-DD`, keduanya opsional & bisa satu saja). Filter pada **`created_at`** (tanggal case dibuat), **inklusif** di kedua ujung — `date_to=2026-08-31` memuat case yang dibuat 31 Agustus jam berapapun. Contoh: `?date_from=2026-06-01&date_to=2026-08-31` = 1 Juni s.d. 31 Agustus. Validasi: format salah / `date_from > date_to` → `422` dengan pesan jelas. Bisa dikombinasikan dengan semua filter lain (status, group_id, dll) dan pagination. Karena masuk ke shared SQL builder, list & export dijamin konsisten.
+
 ### v1.21 (21 September 2026) — export Excel `/api/cases/export.xlsx`
 Endpoint baru `GET /api/cases/export.xlsx`: download file **.xlsx** berisi SEMUA case yang lolos filter (tanpa pagination). **Filter identik 100% dengan `GET /api/cases`** (dipakai ulang SQL builder yang sama — dijamin tidak mungkin beda): `status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`. Response `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `Content-Disposition: attachment; filename="cases_export_YYYYMMDD-HHMM.xlsx"`. Kolom: ID, Case Code, Jenis Case, Judul, Status, Nomor Indihome, Area, Regional, Sumber Ticket, Grup WA, Reminder Count, Created At, Updated At (datetime format `YYYY-MM-DD HH:MM`). Header bold, lebar kolom rapi. FE: pakai `<a href>` / `window.open` dengan header X-API-Key (atau fetch → blob → trigger download). Dependency baru: `openpyxl` (terpasang otomatis via requirements).
 

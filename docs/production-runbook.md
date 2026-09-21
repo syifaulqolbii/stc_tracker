@@ -553,6 +553,30 @@ Akar masalah (case INC000024096448): pesan berisi literal `@628119298880`
 grup/LID (participants kedua grup `@c.us` semua; mention by nomor terbukti
 work di case INC2313132123).
 
+## Re-verify pasca-deploy (v1.22 filter tanggal)
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. List dengan rentang 1 Jun - 31 Agu (inklusif):
+curl -s -H "X-API-Key: $KEY" "$API/api/cases?date_from=2026-06-01&date_to=2026-08-31" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); rows=[c for c in d if not (  '2026-06-01' <= c['created_at'][:10] <= '2026-08-31')]; print('di luar rentang:', len(rows))"
+# → di luar rentang: 0
+
+# 2. Format salah → 422:
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-API-Key: $KEY" \
+  "$API/api/cases?date_from=01-06-2026"   # → 422
+
+# 3. from > to → 422:
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-API-Key: $KEY" \
+  "$API/api/cases?date_from=2026-08-31&date_to=2026-06-01"   # → 422
+
+# 4. Export dengan rentang:
+curl -s -H "X-API-Key: $KEY" -o /tmp/export_range.xlsx -w "%{http_code}\n" \
+  "$API/api/cases/export.xlsx?date_from=2026-06-01&date_to=2026-08-31"
+```
+
 ## Re-verify pasca-deploy (v1.21 export Excel)
 
 ```bash

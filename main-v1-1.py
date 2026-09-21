@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.21.0",
+    version="1.22.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1354,7 +1354,24 @@ async def test_send_case(inp: TestSendIn,
 # Filter SQL list cases — dipakai bersama GET /api/cases dan GET /api/cases/export.xlsx
 # supaya filter UI list dan hasil export DIJAMIN identik (v1.21).
 def _cases_filter_sql(status, case_type, area_id, regional_id,
-                     sumber_ticket, group_id, q, include_deleted) -> tuple[str, list]:
+                      sumber_ticket, group_id, q, include_deleted,
+                      date_from=None, date_to=None) -> tuple[str, list]:
+    # Validasi format tanggal SEBELUM SQL dibangun (v1.22): YYYY-MM-DD, inklusif.
+    if date_from:
+        try:
+            date_from = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_from harus format YYYY-MM-DD (contoh: 2026-06-01)")
+    if date_to:
+        try:
+            date_to = datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_to harus format YYYY-MM-DD (contoh: 2026-08-31)")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from tidak boleh setelah date_to")
+
     sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
                     c.created_at, c.updated_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
@@ -1392,6 +1409,13 @@ def _cases_filter_sql(status, case_type, area_id, regional_id,
     if q:
         sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
         args += [f"%{q}%", f"%{q}%"]
+    if date_from:
+        sql += " AND c.created_at >= %s"
+        args.append(date_from)
+    if date_to:
+        # +1 hari supaya date_to INKLUSIF (created_at pada hari itu ikut, jam berapapun)
+        sql += " AND c.created_at < %s"
+        args.append(date_to + timedelta(days=1))
     return sql, args
 
 
@@ -1424,6 +1448,8 @@ def export_cases_xlsx(
     group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
     q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
     include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    date_from: str | None = Query(None, description="Filter created_at mulai tanggal ini (inklusif, YYYY-MM-DD). v1.22"),
+    date_to: str | None = Query(None, description="Filter created_at sampai tanggal ini (inklusif, YYYY-MM-DD). v1.22"),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
@@ -1433,7 +1459,8 @@ def export_cases_xlsx(
     from openpyxl.utils import get_column_letter
 
     sql, args = _cases_filter_sql(status, case_type, area_id, regional_id,
-                                  sumber_ticket, group_id, q, include_deleted)
+                                  sumber_ticket, group_id, q, include_deleted,
+                                  date_from, date_to)
     # Export pakai SELECT-list sendiri: + reminder_count, tanpa kolom ids mentah
     sql = sql.replace(
         "st.name AS sumber_ticket_name, jc.name AS jenis_case_name",
@@ -1504,13 +1531,16 @@ def list_cases(
     group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
     q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
     include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    date_from: str | None = Query(None, description="Filter created_at mulai tanggal ini (inklusif, YYYY-MM-DD). v1.22"),
+    date_to: str | None = Query(None, description="Filter created_at sampai tanggal ini (inklusif, YYYY-MM-DD). v1.22"),
     page: int = Query(1, ge=1, description="Nomor halaman, mulai dari 1. Diabaikan jika limit=0"),
     limit: int | None = Query(None, ge=1, le=100, description="OPSIONAL. Diisi → pagination aktif, response jadi envelope {data, pagination}. Tidak dikirim → legacy: array polos semua row (kompatibel FE lama). Max 100."),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
     sql, args = _cases_filter_sql(status, case_type, area_id, regional_id,
-                                  sumber_ticket, group_id, q, include_deleted)
+                                  sumber_ticket, group_id, q, include_deleted,
+                                  date_from, date_to)
     sql += " ORDER BY c.updated_at DESC"
     # Pagination opt-in (v1.20): tanpa `limit` → legacy array polos (kompatibel FE lama).
     if limit is None:
