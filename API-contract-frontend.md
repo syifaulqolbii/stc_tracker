@@ -1644,6 +1644,15 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.21 (21 September 2026) — export Excel `/api/cases/export.xlsx`
+Endpoint baru `GET /api/cases/export.xlsx`: download file **.xlsx** berisi SEMUA case yang lolos filter (tanpa pagination). **Filter identik 100% dengan `GET /api/cases`** (dipakai ulang SQL builder yang sama — dijamin tidak mungkin beda): `status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`. Response `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `Content-Disposition: attachment; filename="cases_export_YYYYMMDD-HHMM.xlsx"`. Kolom: ID, Case Code, Jenis Case, Judul, Status, Nomor Indihome, Area, Regional, Sumber Ticket, Grup WA, Reminder Count, Created At, Updated At (datetime format `YYYY-MM-DD HH:MM`). Header bold, lebar kolom rapi. FE: pakai `<a href>` / `window.open` dengan header X-API-Key (atau fetch → blob → trigger download). Dependency baru: `openpyxl` (terpasang otomatis via requirements).
+
+### v1.20.2 (21 September 2026) — fix 500 pagination (KeyError)
+Hotfix produksi: `COUNT(*)` kini ber-alias `SELECT COUNT(*) AS total` dan diakses via `fetchone()["total"]` — pool psycopg aplikasi memakai `dict_row`, jadi akses index tuple (`fetchone()[0]`) melempar `KeyError: 0` → 500 di setiap request dengan `limit`. Tidak ada perubahan kontrak response.
+
+### v1.20.1 (21 September 2026) — fix 500 pagination (COUNT malformed)
+Hotfix produksi: query COUNT awalnya dibangun dengan `sql.replace()` yang hanya mengganti baris SELECT pertama, menyisakan baris kolom lain → SQL malformasi → syntax error Postgres → 500 di setiap request dengan `limit`. Kini COUNT dibangun dari potongan `FROM cases` ke belakang. Tidak ada perubahan kontrak response.
+
 ### v1.20 (21 September 2026) — pagination opt-in di GET /api/cases
 Param baru `page` (default 1) & `limit` (1–100). **Backwards compatible**: tanpa `limit`, response tetap array polos (FE lama tidak perlu berubah). Dengan `limit`, response jadi envelope `{data, pagination}` (`page`, `limit`, `total`, `total_pages`, `has_next`, `has_prev`). COUNT dibangun dari SQL filter yang sama (tanpa ORDER BY), data via `LIMIT/OFFSET`. `limit=0`, `limit>100`, `page<1` → `422`. Motivasi: dashboard polling 30 dtk tidak lagi mengambil seluruh tabel saat data membesar.
 

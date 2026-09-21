@@ -5,9 +5,11 @@ Updated for v1.2: new case types, new fields, new lookup endpoints.
 """
 import os
 import sys
+import io
 import json
 import httpx
 import pytest
+from datetime import datetime
 from contextlib import contextmanager
 from unittest.mock import patch, MagicMock, AsyncMock, call
 from fastapi.testclient import TestClient
@@ -2519,3 +2521,89 @@ class TestCaseListPagination:
              patch.object(main_module, "BACKEND_API_KEY", ""):
             tc = TestClient(main_module.app)
             assert tc.get("/api/cases?page=0&limit=10").status_code == 422
+
+
+# ===================== Export Excel (v1.21) =====================
+
+class TestCaseExport:
+    """GET /api/cases/export.xlsx — download xlsx dengan filter identik list."""
+
+    def _export(self, tc, mock_cursor, query=""):
+        # fetchall dikembalikan sebagai list of dict (mimics dict_row)
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "case_code": "INC000000001", "jenis_case_name": "Non Order",
+             "title": "Case pertama", "status": "open", "no_indihome": "141410121054",
+             "area_name": "Area 1", "regional_name": "Sumbagteng",
+             "sumber_ticket_name": "STC", "group_name": "Grup A", "reminder_count": 2,
+             "created_at": datetime(2026, 9, 21, 8, 30),
+             "updated_at": datetime(2026, 9, 21, 9, 0)},
+            {"id": 2, "case_code": "1-SO9BLGS", "jenis_case_name": "Non AO",
+             "title": "Case kedua", "status": "in_progress", "no_indihome": None,
+             "area_name": None, "regional_name": None, "sumber_ticket_name": None,
+             "group_name": None, "reminder_count": None,
+             "created_at": None, "updated_at": None},
+        ]
+        return tc.get(f"/api/cases/export.xlsx{query}")
+
+    def test_returns_xlsx_content_type_and_disposition(self, client):
+        tc, mock_cursor = client
+        resp = self._export(tc, mock_cursor)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] ==             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        assert "attachment" in resp.headers["content-disposition"]
+        assert resp.headers["content-disposition"].startswith('attachment; filename="cases_export_')
+
+    def test_file_is_valid_xlsx_with_header_and_rows(self, client):
+        from openpyxl import load_workbook
+        tc, mock_cursor = client
+        resp = self._export(tc, mock_cursor)
+        wb = load_workbook(io.BytesIO(resp.content))
+        ws = wb["cases"]
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[0] == (
+            "ID", "Case Code", "Jenis Case", "Judul", "Status", "Nomor Indihome",
+            "Area", "Regional", "Sumber Ticket", "Grup WA", "Reminder Count",
+            "Created At", "Updated At")
+        assert len(rows) == 3  # header + 2 data
+        assert rows[1][1] == "INC000000001"
+        assert rows[1][5] == "141410121054"
+        assert rows[1][11] == "2026-09-21 08:30"  # datetime diformat
+        assert rows[2][2] == "Non AO"  # row kedua lolos: None aman
+
+    def test_zero_rows_produces_header_only_file(self, client):
+        from openpyxl import load_workbook
+        tc, mock_cursor = client
+        mock_cursor.fetchall.return_value = []
+        resp = tc.get("/api/cases/export.xlsx")
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content))["cases"]
+        rows = list(ws.iter_rows(values_only=True))
+        assert len(rows) == 1  # hanya header
+
+    def test_filters_are_passed_to_sql(self, client):
+        tc, mock_cursor = client
+        self._export(tc, mock_cursor, query="?status=open&group_id=2&q=INC")
+        sql = mock_cursor.execute.call_args[0][0]
+        args = mock_cursor.execute.call_args[0][1]
+        assert "c.status = %s" in sql
+        assert "c.group_id = %s" in sql
+        assert "ILIKE" in sql
+        # args: [include_deleted, status, group_id, q, q]
+        assert args[0] is False
+        assert "open" in args and 2 in args and "%INC%" in args
+
+    def test_export_uses_shared_filter_builder(self, client):
+        """Regression: export & list wajib pakai SQL filter yang sama."""
+        tc, mock_cursor = client
+        self._export(tc, mock_cursor, query="?status=done")
+        export_sql = mock_cursor.execute.call_args[0][0]
+        assert export_sql.index(" FROM cases c") > 0
+        assert "LEFT JOIN wa_groups g" in export_sql
+        assert "deleted_at IS NULL" in export_sql
+
+    def test_requires_api_key(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn),              patch.object(main_module, "BACKEND_API_KEY", "secret123"):
+            tc = TestClient(main_module.app)
+            resp = tc.get("/api/cases/export.xlsx")
+            assert resp.status_code == 401

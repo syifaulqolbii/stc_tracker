@@ -553,6 +553,85 @@ Akar masalah (case INC000024096448): pesan berisi literal `@628119298880`
 grup/LID (participants kedua grup `@c.us` semua; mention by nomor terbukti
 work di case INC2313132123).
 
+## Re-verify pasca-deploy (v1.21 export Excel)
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. Export tanpa filter → file valid:
+curl -s -H "X-API-Key: $KEY" -o /tmp/export_all.xlsx -w "%{http_code} %{content_type}\n" \
+  "$API/api/cases/export.xlsx"
+# → 200 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+# 2. Export dengan filter → hanya row lolos filter:
+curl -s -H "X-API-Key: $KEY" -o /tmp/export_open.xlsx \
+  "$API/api/cases/export.xlsx?status=open&group_id=1"
+
+# 3. Verifikasi isi (butuh python3 + openpyxl di host, atau buka manual di Excel):
+python3 -c "
+from openpyxl import load_workbook
+ws = load_workbook('/tmp/export_all.xlsx')['cases']
+rows = list(ws.iter_rows(values_only=True))
+print('header:', rows[0][:4])
+print('jumlah row data:', len(rows)-1)
+"
+
+# 4. Auth: tanpa key → 401
+curl -s -o /dev/null -w "%{http_code}\n" "$API/api/cases/export.xlsx"
+```
+
+Catatan deploy v1.21: image baru memasang `openpyxl` (dependency baru di
+requirements.txt) — `docker compose build app` wajib, bukan sekadar restart.
+
+## Re-verify pasca-deploy (v1.20.x pagination)
+
+```bash
+API=https://api.stc.syfa.site
+KEY=$(grep '^BACKEND_API_KEY=' .env | cut -d= -f2-)
+
+# 1. Legacy: tanpa limit → array polos (FE existing aman):
+curl -s -H "X-API-Key: $KEY" "$API/api/cases" | python3 -c "import sys,json; d=json.load(sys.stdin); print(type(d).__name__, len(d))"
+
+# 2. Pagination: envelope data+pagination:
+curl -s -H "X-API-Key: $KEY" "$API/api/cases?page=1&limit=10" | python3 -c "import sys,json; print(json.load(sys.stdin)['pagination'])"
+# → {'page': 1, 'limit': 10, 'total': N, 'total_pages': ..., 'has_next': ..., 'has_prev': False}
+
+# 3. Validasi: limit=0 → 422:
+curl -s -o /dev/null -w "%{http_code}\n" -H "X-API-Key: $KEY" "$API/api/cases?limit=0"
+```
+
+## Fix findings 2026-09-14 (case-15)
+
+Arsip lengkap: `docs/findings-2026-09-14-case-15.md`.
+
+**Fix #1 — reminder tidak masuk reply-chain:** pesan reminder kini disimpan ke
+`wa_messages` (`from_me=true`) sehingga reply solver ke pesan reminder ter-link
+dengan `source=chain`. Sebelumnya reminder hanya tersimpan di `reminder_log`, jadi
+reply ke pesan reminder tidak terdeteksi (harus reply pesan root).
+
+**Fix #2 — mention `@<lid>` tidak di-resolve:** `rewrite_mentions` kini async
+dengan fallback WAHA API (cache → `GET /lids/{lid}` → `GET /api/contacts`) dan
+hasilnya di-cache. Prioritas nama: `pushname` profil > nama kontak. Pesan lama
+yang tersimpan sebelum deploy tidak di-rewrite retroaktif (backfill opsional).
+
+## Validasi ticket_remedy & field case_id (v1.14)
+
+- `fields.ticket_remedy` harus format `INC\d{9,}` (case-insensitive, di-uppercase) —
+  nilai non-INC → `422` dengan pesan yang mengarahkan FE kirim ke `fields.case_id`.
+- `fields.case_id` (mis. `1-SSNKPOA`) diterima tanpa syarat format, dirender sebagai
+  baris `Case ID : <kode>` di WA, dan menjadi `case_code` via fallback.
+- Ketikan manual kode non-INC (mis. `proses 1-SSNKPOA`) terdeteksi via exact-match
+  ke `open_case_codes` grup (harus ada keyword status: proses/done/beres/kendala, dst),
+  case-insensitive, word-boundary — tanpa LLM. (v1.14.1)
+
+## Exact-match kode non-INC (v1.14.1)
+
+Urutan matching `handle_message`: regex INC → exact-match non-INC (keyword status
++ persis salah satu case_code terbuka grup, word-boundary) → reply/chain → LLM.
+Guard anti false-positive: tanpa keyword status pesan tidak masuk jalur exact-match
+(hemat query); substring salah ketik ditolak word-boundary.
+
 Fix: backend auto-extract token `@<digit>` dari teks final ke payload WAHA
 (union + dedupe dengan mentions dropdown), disimpan juga ke `cases.mentions`
 (`name: null`) supaya reminder ikut ngetag. `{phone}` tanpa mentions → 422.

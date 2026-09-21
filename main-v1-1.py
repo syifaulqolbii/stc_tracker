@@ -18,6 +18,7 @@ Asal Grapari: text input (tidak disimpan di tabel terpisah).
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -195,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.20.0",
+    version="1.21.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1350,27 +1351,10 @@ async def test_send_case(inp: TestSendIn,
             "wa_message_id": wa_mid, "text": text}
 
 
-@app.get("/api/cases", tags=["Cases"],
-         summary="Daftar case (dashboard list)",
-         description="List case dengan filter opsional + pagination. Diurutkan updated_at DESC. "
-                     "Response berupa envelope {data, pagination} (v1.20). "
-                     "Pagination OPT-IN: tanpa param `limit` response tetap array polos (legacy, kompatibel FE lama); "
-                     "dengan `limit` (1-100) response jadi envelope {data, pagination}. `page` mulai dari 1.")
-def list_cases(
-    request: Request,
-    status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
-    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
-    area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
-    regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
-    sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
-    group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
-    q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
-    include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
-    page: int = Query(1, ge=1, description="Nomor halaman, mulai dari 1. Diabaikan jika limit=0"),
-    limit: int | None = Query(None, ge=1, le=100, description="OPSIONAL. Diisi → pagination aktif, response jadi envelope {data, pagination}. Tidak dikirim → legacy: array polos semua row (kompatibel FE lama). Max 100."),
-    _auth: str = Depends(verify_api_key),
-    _rate: None = Depends(check_rate_limit),
-):
+# Filter SQL list cases — dipakai bersama GET /api/cases dan GET /api/cases/export.xlsx
+# supaya filter UI list dan hasil export DIJAMIN identik (v1.21).
+def _cases_filter_sql(status, case_type, area_id, regional_id,
+                     sumber_ticket, group_id, q, include_deleted) -> tuple[str, list]:
     sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
                     c.created_at, c.updated_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
@@ -1408,8 +1392,126 @@ def list_cases(
     if q:
         sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
         args += [f"%{q}%", f"%{q}%"]
+    return sql, args
+
+
+# ---------------------------------------------------------------- Export Excel (v1.21)
+
+EXPORT_COLUMNS = ["ID", "Case Code", "Jenis Case", "Judul", "Status", "Nomor Indihome",
+                  "Area", "Regional", "Sumber Ticket", "Grup WA", "Reminder Count",
+                  "Created At", "Updated At"]
+
+
+def _dt_fmt(v):
+    """Format datetime ke string 'YYYY-MM-DD HH:MM' (naive-local, sudah UTC dari DB)."""
+    if isinstance(v, datetime):
+        return v.strftime("%Y-%m-%d %H:%M")
+    return v
+
+
+@app.get("/api/cases/export.xlsx", tags=["Cases"],
+         summary="Export case ke Excel (.xlsx)",
+         description="Download file Excel berisi SEMUA case yang lolos filter (tanpa pagination). "
+                     "Filter identik dengan GET /api/cases: status, case_type, area_id, regional_id, "
+                     "sumber_ticket, group_id, q, include_deleted. Header bold + freeze pane.")
+def export_cases_xlsx(
+    request: Request,
+    status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
+    area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
+    regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
+    sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
+    group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
+    q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
+    include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    from openpyxl import Workbook  # lazy import: hanya dimuat saat endpoint dipakai
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    sql, args = _cases_filter_sql(status, case_type, area_id, regional_id,
+                                  sumber_ticket, group_id, q, include_deleted)
+    # Export pakai SELECT-list sendiri: + reminder_count, tanpa kolom ids mentah
+    sql = sql.replace(
+        "st.name AS sumber_ticket_name, jc.name AS jenis_case_name",
+        "st.name AS sumber_ticket_name, jc.name AS jenis_case_name, c.reminder_count",
+    )
     sql += " ORDER BY c.updated_at DESC"
 
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        rows = cur.fetchall()
+
+    # Data mapping: urutan kolom sesuai SELECT-list (id, case_code, jenis, title,
+    # status, no_indihome, area, regional, sumber, group, reminder_count, created, updated)
+    data = [[r["id"], r["case_code"], r["jenis_case_name"], r["title"], r["status"],
+             r["no_indihome"], r["area_name"], r["regional_name"], r["sumber_ticket_name"],
+             r["group_name"], r["reminder_count"],
+             _dt_fmt(r["created_at"]), _dt_fmt(r["updated_at"])] for r in rows]
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("cases")
+
+    # Lebar kolom: harus diset SEBELUM baris pertama (batas mode write_only)
+    widths = [8, 18, 14, 50, 12, 16, 12, 14, 14, 24, 10, 17, 17]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Header bold (WriteOnlyCell diperlukan untuk styling di mode write_only)
+    header_font = Font(bold=True)
+    ws.append([WriteOnlyCell(ws, value=c) for c in EXPORT_COLUMNS])
+    # catatan: write_only tidak mendukung freeze_panes — trade-off hemat memori
+    for row in data:
+        ws.append([_coerce_cell(v) for v in row])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    fname = f"cases_export_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+def _coerce_cell(v):
+    """Pastikan nilai sel selalu tipe yang diterima openpyxl (str/int/float/None)."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float, bool, str)):
+        return v
+    return str(v)
+
+
+@app.get("/api/cases", tags=["Cases"],
+         summary="Daftar case (dashboard list)",
+         description="List case dengan filter opsional + pagination. Diurutkan updated_at DESC. "
+                     "Response berupa envelope {data, pagination} (v1.20). "
+                     "Pagination OPT-IN: tanpa param `limit` response tetap array polos (legacy, kompatibel FE lama); "
+                     "dengan `limit` (1-100) response jadi envelope {data, pagination}. `page` mulai dari 1.")
+def list_cases(
+    request: Request,
+    status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
+    area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
+    regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
+    sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
+    group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
+    q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
+    include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    page: int = Query(1, ge=1, description="Nomor halaman, mulai dari 1. Diabaikan jika limit=0"),
+    limit: int | None = Query(None, ge=1, le=100, description="OPSIONAL. Diisi → pagination aktif, response jadi envelope {data, pagination}. Tidak dikirim → legacy: array polos semua row (kompatibel FE lama). Max 100."),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql, args = _cases_filter_sql(status, case_type, area_id, regional_id,
+                                  sumber_ticket, group_id, q, include_deleted)
+    sql += " ORDER BY c.updated_at DESC"
     # Pagination opt-in (v1.20): tanpa `limit` → legacy array polos (kompatibel FE lama).
     if limit is None:
         with db() as conn, conn.cursor() as cur:
@@ -1418,15 +1520,12 @@ def list_cases(
 
     with db() as conn, conn.cursor() as cur:
         # COUNT: buang seluruh SELECT-list, ambil dari FROM ke belakang
-        # (ganti hanya baris pertama TIDAK cukup — sisa kolom bikin SQL malformasi)
-        count_sql = "SELECT COUNT(*) " + sql[sql.index(" FROM cases c"):]
-        # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
-        count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
-        # pool pakai dict_row → COUNT harus di-AS alias, akses via nama kolom
+        # (ganti hanya baris pertama TIDAK cukup — sisa kolom bikin SQL malformasi).
+        # Pool pakai dict_row → COUNT harus di-AS alias, akses via nama kolom.
         count_sql = "SELECT COUNT(*) AS total " + sql[sql.index(" FROM cases c"):]
-        # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
         count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
         cur.execute(count_sql, args)
+
         total = cur.fetchone()["total"]
         cur.execute(sql + " LIMIT %s OFFSET %s", args + [limit, (page - 1) * limit])
         rows = cur.fetchall()
