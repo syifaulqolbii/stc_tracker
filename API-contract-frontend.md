@@ -310,8 +310,14 @@ X-API-Key: <key>
 | `group_id` | `1` | filter berdasarkan grup WA (ID dari `GET /api/groups`) |
 | `sumber_ticket` | `Grapari` | filter sumber ticket |
 | `q` | `INC0000234` | pencarian substring di `case_code` dan `title` (case-insensitive) |
+| `date_from` | `2026-06-01` | **Opsional (v1.22)** — filter `created_at` mulai tanggal ini (inklusif). Format `YYYY-MM-DD`, bisa dikirim sendirian |
+| `date_to` | `2026-08-31` | **Opsional (v1.22)** — filter `created_at` sampai tanggal ini (**inklusif** — case 31 Agu jam berapapun ikut). Format `YYYY-MM-DD` |
 | `page` | `1` | **Opsional (v1.20)** — nomor halaman, mulai dari 1. Hanya dipakai jika `limit` dikirim |
 | `limit` | — | **Opsional (v1.20)** — `1`–`100`. Diisi → response jadi **envelope `{data, pagination}`**. Tidak dikirim → response tetap **array polos** (legacy, kompatibel FE lama) |
+
+**Error validasi tanggal (v1.22):** format salah / `date_from > date_to` → `422` dengan `detail` string, contoh: `"date_from harus format YYYY-MM-DD (contoh: 2026-06-01)"`.
+
+> **Filter tanggal (v1.22):** berbasis `created_at` (tanggal case dibuat, UTC). Rentang inklusif di kedua ujung — `?date_from=2026-06-01&date_to=2026-08-31` = semua case dibuat 1 Juni s.d. 31 Agustus. Filter ini juga berlaku identik di **export Excel** (§3.3b) karena memakai SQL builder yang sama.
 
 **Response `200` — LEGACY (tanpa param `limit`, identik perilaku lama):**
 ```json
@@ -354,6 +360,57 @@ X-API-Key: <key>
 Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru"). Setiap row kini menyertakan `group_id` dan `group_name` (hasil join `wa_groups`) — pakai untuk badge/nama grup di dashboard (switcher). Sejak **v1.19**, setiap row juga menyertakan **`no_indihome`** (diambil dari `fields.no_indihome` case, `null` kalau tidak ada) — untuk kolom Nomor IH di list tanpa perlu fetch detail per case.
 
 > **Pagination (v1.20) — OPT-IN, backwards compatible:** tanpa param `limit`, response **tetap array polos** — kode FE existing tidak perlu diubah. Saat FE siap pakai pagination, tambahkan `?page=N&limit=M` (M maks 100) dan baca `resp.data` (rows) + `resp.pagination` (untuk UI paging). Polling 30 dtk disarankan pindah ke pagination supaya payload tetap kecil saat data membesar. `limit=0` / `limit>100` / `page<1` → `422`.
+
+---
+
+### 3.3b `GET /api/cases/export.xlsx` — Export case ke Excel (v1.21)
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Query params:** **identik dengan §3.3** (`status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`, + `date_from`/`date_to` sejak v1.22) — **tanpa** `page`/`limit` (export selalu semua row yang lolos filter). Karena memakai SQL builder yang sama dengan list, hasil export **dijamin konsisten** dengan yang tampil di dashboard.
+
+**Response `200`:** file binary `.xlsx`
+```
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+Content-Disposition: attachment; filename="cases_export_20260921-0646.xlsx"
+```
+
+**Isi file:**
+
+| Kolom | Sumber |
+|---|---|
+| ID, Case Code, Status, Nomor Indihome | kolom `cases` / `fields->>'no_indihome'` |
+| Jenis Case, Area, Regional, Sumber Ticket, Grup WA | hasil join lookup (nama, bukan ID) |
+| Judul | `cases.title` |
+| Reminder Count | `cases.reminder_count` |
+| Created At, Updated At | format `YYYY-MM-DD HH:MM` |
+
+Header bold, lebar kolom disetel. Nilai `null` → sel kosong.
+
+**Error:** `401` tanpa/da key salah · `422` filter tidak valid (termasuk tanggal) · file tetap valid (header saja) kalau 0 row lolos filter.
+
+**Contoh integrasi FE (fetch → blob → download):**
+```js
+async function exportExcel(filters) {
+  const qs = new URLSearchParams(filters).toString(); // filter aktif dashboard
+  const resp = await fetch(`/api/cases/export.xlsx?${qs}`, {
+    headers: { "X-API-Key": API_KEY },
+  });
+  if (!resp.ok) throw await getErrMsg(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), {
+    href: url, download: `cases_${new Date().toISOString().slice(0,10)}.xlsx`,
+  });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+// exportExcel({ status: "open", date_from: "2026-06-01", date_to: "2026-08-31" });
+```
+> Jangan pakai `<a href>` langsung ke endpoint — API key akan bocor di URL/history. Selalu fetch + blob.
 
 ---
 
@@ -1645,7 +1702,7 @@ https://imgur.com/app_error
 ## 12. Changelog
 
 ### v1.22 (21 September 2026) — filter rentang tanggal `date_from` / `date_to`
-Param baru di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`**: `date_from` & `date_to` (format `YYYY-MM-DD`, keduanya opsional & bisa satu saja). Filter pada **`created_at`** (tanggal case dibuat), **inklusif** di kedua ujung — `date_to=2026-08-31` memuat case yang dibuat 31 Agustus jam berapapun. Contoh: `?date_from=2026-06-01&date_to=2026-08-31` = 1 Juni s.d. 31 Agustus. Validasi: format salah / `date_from > date_to` → `422` dengan pesan jelas. Bisa dikombinasikan dengan semua filter lain (status, group_id, dll) dan pagination. Karena masuk ke shared SQL builder, list & export dijamin konsisten.
+Param baru di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`**: `date_from` & `date_to` (format `YYYY-MM-DD`, keduanya opsional & bisa satu saja). Filter pada **`created_at`** (tanggal case dibuat), **inklusif** di kedua ujung — `date_to=2026-08-31` memuat case yang dibuat 31 Agustus jam berapapun. Contoh: `?date_from=2026-06-01&date_to=2026-08-31` = 1 Juni s.d. 31 Agustus. Validasi: format salah / `date_from > date_to` → `422` dengan pesan jelas. Bisa dikombinasikan dengan semua filter lain (status, group_id, dll) dan pagination. Karena masuk ke shared SQL builder, list & export dijamin konsisten. Referensi detail + panduan integrasi FE: `docs/export-excel-frontend.md`.
 
 ### v1.21 (21 September 2026) — export Excel `/api/cases/export.xlsx`
 Endpoint baru `GET /api/cases/export.xlsx`: download file **.xlsx** berisi SEMUA case yang lolos filter (tanpa pagination). **Filter identik 100% dengan `GET /api/cases`** (dipakai ulang SQL builder yang sama — dijamin tidak mungkin beda): `status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`. Response `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `Content-Disposition: attachment; filename="cases_export_YYYYMMDD-HHMM.xlsx"`. Kolom: ID, Case Code, Jenis Case, Judul, Status, Nomor Indihome, Area, Regional, Sumber Ticket, Grup WA, Reminder Count, Created At, Updated At (datetime format `YYYY-MM-DD HH:MM`). Header bold, lebar kolom rapi. FE: pakai `<a href>` / `window.open` dengan header X-API-Key (atau fetch → blob → trigger download). Dependency baru: `openpyxl` (terpasang otomatis via requirements).
