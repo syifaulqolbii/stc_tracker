@@ -310,8 +310,10 @@ X-API-Key: <key>
 | `group_id` | `1` | filter berdasarkan grup WA (ID dari `GET /api/groups`) |
 | `sumber_ticket` | `Grapari` | filter sumber ticket |
 | `q` | `INC0000234` | pencarian substring di `case_code` dan `title` (case-insensitive) |
+| `page` | `1` | **Opsional (v1.20)** — nomor halaman, mulai dari 1. Hanya dipakai jika `limit` dikirim |
+| `limit` | — | **Opsional (v1.20)** — `1`–`100`. Diisi → response jadi **envelope `{data, pagination}`**. Tidak dikirim → response tetap **array polos** (legacy, kompatibel FE lama) |
 
-**Response `200`:**
+**Response `200` — LEGACY (tanpa param `limit`, identik perilaku lama):**
 ```json
 [
   {
@@ -326,6 +328,7 @@ X-API-Key: <key>
     "sumber_ticket_id": 2,
     "jenis_case_id": 1,
     "asal_grapari": "GraPARI Bandung",
+    "no_indihome": "0211234567",
     "group_id": 1,
     "group_name": "Grup A",
     "area_name": "Area 1",
@@ -337,7 +340,20 @@ X-API-Key: <key>
   }
 ]
 ```
+
+**Response `200` — PAGINATED (dengan `?page=1&limit=50`):**
+```json
+{
+  "data": [ ...array rows yang sama persis dengan legacy di atas... ],
+  "pagination": {
+    "page": 1, "limit": 50, "total": 123,
+    "total_pages": 3, "has_next": true, "has_prev": false
+  }
+}
+```
 Diurutkan `updated_at DESC` — case yang baru ada aktivitas selalu di atas. `ack` menunjukkan pesan case sudah dibaca grup atau belum (berguna untuk indikator "✓✓ biru"). Setiap row kini menyertakan `group_id` dan `group_name` (hasil join `wa_groups`) — pakai untuk badge/nama grup di dashboard (switcher). Sejak **v1.19**, setiap row juga menyertakan **`no_indihome`** (diambil dari `fields.no_indihome` case, `null` kalau tidak ada) — untuk kolom Nomor IH di list tanpa perlu fetch detail per case.
+
+> **Pagination (v1.20) — OPT-IN, backwards compatible:** tanpa param `limit`, response **tetap array polos** — kode FE existing tidak perlu diubah. Saat FE siap pakai pagination, tambahkan `?page=N&limit=M` (M maks 100) dan baca `resp.data` (rows) + `resp.pagination` (untuk UI paging). Polling 30 dtk disarankan pindah ke pagination supaya payload tetap kecil saat data membesar. `limit=0` / `limit>100` / `page<1` → `422`.
 
 ---
 
@@ -1627,6 +1643,9 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.20 (21 September 2026) — pagination opt-in di GET /api/cases
+Param baru `page` (default 1) & `limit` (1–100). **Backwards compatible**: tanpa `limit`, response tetap array polos (FE lama tidak perlu berubah). Dengan `limit`, response jadi envelope `{data, pagination}` (`page`, `limit`, `total`, `total_pages`, `has_next`, `has_prev`). COUNT dibangun dari SQL filter yang sama (tanpa ORDER BY), data via `LIMIT/OFFSET`. `limit=0`, `limit>100`, `page<1` → `422`. Motivasi: dashboard polling 30 dtk tidak lagi mengambil seluruh tabel saat data membesar.
 
 ### v1.19 (17 September 2026) — no_indihome di list `/api/cases`
 Setiap row `GET /api/cases` kini menyertakan field **`no_indihome`** (diambil langsung dari `fields->>'no_indihome'` di DB — bukan full `fields`). Nilai `null` kalau case tidak punya nomor IH. Tujuan: FE bisa menampilkan kolom Nomor Indihome di dashboard list tanpa harus memanggil `GET /api/cases/{id}` per case. Tidak ada perubahan request/filter — murni tambahan field di response.

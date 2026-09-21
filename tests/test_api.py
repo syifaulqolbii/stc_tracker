@@ -467,7 +467,8 @@ class TestAuth:
             assert response.status_code == 401
 
     def test_correct_api_key_accepted(self, mock_waha):
-        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[[]])
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=None)
+        mock_cursor.fetchall.return_value = []
         with patch.object(main_module, "db", return_value=mock_conn), \
              patch.object(main_module, "BACKEND_API_KEY", "secret-key-123"):
             tc = TestClient(main_module.app)
@@ -476,7 +477,8 @@ class TestAuth:
 
     def test_no_auth_required_when_key_not_configured(self, mock_waha):
         """When BACKEND_API_KEY is empty, all requests should pass."""
-        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[[]])
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=None)
+        mock_cursor.fetchall.return_value = []
         with patch.object(main_module, "db", return_value=mock_conn), \
              patch.object(main_module, "BACKEND_API_KEY", ""):
             tc = TestClient(main_module.app)
@@ -2427,7 +2429,8 @@ class TestCaseReplies:
 class TestCaseListNoIndihome:
     def test_list_cases_includes_no_indihome_field(self, mock_waha):
         """GET /api/cases harus mengekspos fields->>'no_indihome' (untuk FE list)."""
-        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[[]])
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
         with patch.object(main_module, "db", return_value=mock_conn), \
              patch.object(main_module, "BACKEND_API_KEY", ""):
             tc = TestClient(main_module.app)
@@ -2435,3 +2438,79 @@ class TestCaseListNoIndihome:
             assert response.status_code == 200
         executed_sql = mock_cursor.execute.call_args_list[0][0][0]
         assert "fields->>'no_indihome' AS no_indihome" in executed_sql
+
+
+# ============ Test pagination opt-in di list endpoint (v1.20) ============
+
+class TestCaseListPagination:
+    def _call(self, fetchone_seq, query="", fetchall_ret=None):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=fetchone_seq)
+        if fetchall_ret is not None:
+            mock_cursor.fetchall.return_value = fetchall_ret
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            response = tc.get(f"/api/cases{query}")
+        assert response.status_code == 200
+        executed = [(c.args[0], c.args[1] if len(c.args) > 1 else None)
+                    for c in mock_cursor.execute.call_args_list if c.args]
+        return response.json(), executed
+
+    def test_no_params_legacy_array_single_query(self, mock_waha):
+        """Tanpa param → legacy: array polos, 1 query, tanpa LIMIT/OFFSET."""
+        body, executed = self._call(None, "", fetchall_ret=[{"id": 1}])
+        assert body == [{"id": 1}]              # array polos, BUKAN envelope
+        assert len(executed) == 1               # tanpa COUNT
+        assert "LIMIT" not in executed[0][0]
+
+    def test_limit_activates_envelope(self, mock_waha):
+        """?limit=50 → envelope {data, pagination} + query COUNT."""
+        body, executed = self._call([[42], []], "?limit=50")
+        assert set(body.keys()) == {"data", "pagination"}
+        p = body["pagination"]
+        assert p == {"page": 1, "limit": 50, "total": 42,
+                     "total_pages": 1, "has_next": False, "has_prev": False}
+        count_sql, select_sql = executed[0][0], executed[1][0]
+        assert "SELECT COUNT(*)" in count_sql
+        assert "ORDER BY" not in count_sql      # ORDER BY dibuang dari COUNT
+        assert "LIMIT %s OFFSET %s" in select_sql
+        assert executed[1][1] == [False, 50, 0]  # [include_deleted] + [limit, offset]
+
+    def test_page2_limit10_offset_and_flags(self, mock_waha):
+        """page=2&limit=10 → OFFSET 10; has_next & has_prev benar."""
+        body, executed = self._call([[25], []], "?page=2&limit=10")
+        assert executed[1][1] == [False, 10, 10]  # [include_deleted] + [limit=10, offset=10]
+        p = body["pagination"]
+        assert (p["page"], p["limit"], p["total"], p["total_pages"]) == (2, 10, 25, 3)
+        assert p["has_next"] is True and p["has_prev"] is True
+
+    def test_filters_shared_by_count_and_select(self, mock_waha):
+        """Filter q/status harus ada di COUNT dan SELECT dengan args sama."""
+        body, executed = self._call([[7], []], "?q=INC&status=open&limit=20")
+        assert "c.status = %s" in executed[0][0]
+        assert "c.status = %s" in executed[1][0]
+        assert "%INC%" in executed[0][1] and "%INC%" in executed[1][1]
+
+    def test_limit_zero_rejected(self, mock_waha):
+        """limit=0 → 422 (legacy = param tidak dikirim, bukan 0)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            assert tc.get("/api/cases?limit=0").status_code == 422
+
+    def test_limit_over_max_rejected(self, mock_waha):
+        """limit=101 → 422 (max 100, proteksi beban DB)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            assert tc.get("/api/cases?limit=101").status_code == 422
+
+    def test_page_zero_rejected(self, mock_waha):
+        """page=0 → 422 (page mulai dari 1)."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            assert tc.get("/api/cases?page=0&limit=10").status_code == 422

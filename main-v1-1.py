@@ -195,7 +195,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.19.0",
+    version="1.20.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1352,7 +1352,10 @@ async def test_send_case(inp: TestSendIn,
 
 @app.get("/api/cases", tags=["Cases"],
          summary="Daftar case (dashboard list)",
-         description="List semua case dengan filter opsional. Diurutkan updated_at DESC.")
+         description="List case dengan filter opsional + pagination. Diurutkan updated_at DESC. "
+                     "Response berupa envelope {data, pagination} (v1.20). "
+                     "Pagination OPT-IN: tanpa param `limit` response tetap array polos (legacy, kompatibel FE lama); "
+                     "dengan `limit` (1-100) response jadi envelope {data, pagination}. `page` mulai dari 1.")
 def list_cases(
     request: Request,
     status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
@@ -1363,6 +1366,8 @@ def list_cases(
     group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
     q: str | None = Query(None, description="Pencarian substring di case_code dan title"),
     include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    page: int = Query(1, ge=1, description="Nomor halaman, mulai dari 1. Diabaikan jika limit=0"),
+    limit: int | None = Query(None, ge=1, le=100, description="OPSIONAL. Diisi → pagination aktif, response jadi envelope {data, pagination}. Tidak dikirim → legacy: array polos semua row (kompatibel FE lama). Max 100."),
     _auth: str = Depends(verify_api_key),
     _rate: None = Depends(check_rate_limit),
 ):
@@ -1404,9 +1409,29 @@ def list_cases(
         sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
         args += [f"%{q}%", f"%{q}%"]
     sql += " ORDER BY c.updated_at DESC"
+
+    # Pagination opt-in (v1.20): tanpa `limit` → legacy array polos (kompatibel FE lama).
+    if limit is None:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(sql, args)
+            return cur.fetchall()
+
     with db() as conn, conn.cursor() as cur:
-        cur.execute(sql, args)
-        return cur.fetchall()
+        count_sql = sql.replace(
+            "SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,",
+            "SELECT COUNT(*)", 1)
+        # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
+        count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
+        cur.execute(count_sql, args)
+        total = cur.fetchone()[0]
+        cur.execute(sql + " LIMIT %s OFFSET %s", args + [limit, (page - 1) * limit])
+        rows = cur.fetchall()
+    total_pages = (total + limit - 1) // limit
+    return {"data": rows,
+            "pagination": {"page": page, "limit": limit, "total": total,
+                           "total_pages": total_pages,
+                           "has_next": page < total_pages,
+                           "has_prev": page > 1}}
 
 
 @app.get("/api/cases/{case_id}", tags=["Cases"],
