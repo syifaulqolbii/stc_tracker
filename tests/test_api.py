@@ -2464,14 +2464,15 @@ class TestCaseListPagination:
         assert "LIMIT" not in executed[0][0]
 
     def test_limit_activates_envelope(self, mock_waha):
-        """?limit=50 → envelope {data, pagination} + query COUNT."""
-        body, executed = self._call([[42], []], "?limit=50")
+        """?limit=50 → envelope {data, pagination} + query COUNT (dict_row)."""
+        # pool pakai dict_row → fetchone balikin dict dengan alias kolom
+        body, executed = self._call([{"total": 42}, []], "?limit=50")
         assert set(body.keys()) == {"data", "pagination"}
         p = body["pagination"]
         assert p == {"page": 1, "limit": 50, "total": 42,
                      "total_pages": 1, "has_next": False, "has_prev": False}
         count_sql, select_sql = executed[0][0], executed[1][0]
-        assert "SELECT COUNT(*)" in count_sql
+        assert "SELECT COUNT(*) AS total" in count_sql  # dict_row pool → wajib alias
         assert "ORDER BY" not in count_sql      # ORDER BY dibuang dari COUNT
         assert "LIMIT %s OFFSET %s" in select_sql
         # SQL COUNT harus VALID: tidak ada sisa kolom setelah COUNT(*)
@@ -2482,7 +2483,7 @@ class TestCaseListPagination:
 
     def test_page2_limit10_offset_and_flags(self, mock_waha):
         """page=2&limit=10 → OFFSET 10; has_next & has_prev benar."""
-        body, executed = self._call([[25], []], "?page=2&limit=10")
+        body, executed = self._call([{"total": 25}, []], "?page=2&limit=10")
         assert executed[1][1] == [False, 10, 10]  # [include_deleted] + [limit=10, offset=10]
         p = body["pagination"]
         assert (p["page"], p["limit"], p["total"], p["total_pages"]) == (2, 10, 25, 3)
@@ -2490,7 +2491,7 @@ class TestCaseListPagination:
 
     def test_filters_shared_by_count_and_select(self, mock_waha):
         """Filter q/status harus ada di COUNT dan SELECT dengan args sama."""
-        body, executed = self._call([[7], []], "?q=INC&status=open&limit=20")
+        body, executed = self._call([{"total": 7}, []], "?q=INC&status=open&limit=20")
         assert "c.status = %s" in executed[0][0]
         assert "c.status = %s" in executed[1][0]
         assert "%INC%" in executed[0][1] and "%INC%" in executed[1][1]

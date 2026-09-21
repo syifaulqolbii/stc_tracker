@@ -1422,8 +1422,12 @@ def list_cases(
         count_sql = "SELECT COUNT(*) " + sql[sql.index(" FROM cases c"):]
         # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
         count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
+        # pool pakai dict_row → COUNT harus di-AS alias, akses via nama kolom
+        count_sql = "SELECT COUNT(*) AS total " + sql[sql.index(" FROM cases c"):]
+        # potong ORDER BY untuk count (tidak berpengaruh pada hasil COUNT)
+        count_sql = count_sql.rsplit(" ORDER BY", 1)[0]
         cur.execute(count_sql, args)
-        total = cur.fetchone()[0]
+        total = cur.fetchone()["total"]
         cur.execute(sql + " LIMIT %s OFFSET %s", args + [limit, (page - 1) * limit])
         rows = cur.fetchall()
     total_pages = (total + limit - 1) // limit
