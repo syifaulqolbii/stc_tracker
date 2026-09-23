@@ -309,7 +309,7 @@ X-API-Key: <key>
 | `regional_id` | `2` | filter berdasarkan Regional ID |
 | `group_id` | `1` | filter berdasarkan grup WA (ID dari `GET /api/groups`) |
 | `sumber_ticket` | `Grapari` | filter sumber ticket |
-| `q` | `INC0000234` | pencarian substring di `case_code` dan `title` (case-insensitive) |
+| `q` | `INC0000234` | pencarian substring di `case_code`, `title`, dan seluruh isi `fields` (no_indihome, order_id, case_id, msisdn, link evidence, dll) — case-insensitive (v1.24) |
 | `date_from` | `2026-06-01` | **Opsional (v1.22)** — filter `created_at` mulai tanggal ini (inklusif). Format `YYYY-MM-DD`, bisa dikirim sendirian |
 | `date_to` | `2026-08-31` | **Opsional (v1.22)** — filter `created_at` sampai tanggal ini (**inklusif** — case 31 Agu jam berapapun ikut). Format `YYYY-MM-DD` |
 | `page` | `1` | **Opsional (v1.20)** — nomor halaman, mulai dari 1. Hanya dipakai jika `limit` dikirim |
@@ -1701,7 +1701,8 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
-### v1.23 (23 September 2026) — notifikasi balasan solver ke grup test
+### v1.24 (23 September 2026) — search `q` ikut menyisir fields
+Peningkatan search di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`** (shared SQL builder): `q` sekarang mencari di `case_code`, `title`, **dan seluruh isi `fields`** (no_indihome, order_id, case_id, msisdn, link evidence, dll). Contoh: `?q=141410121054` menemukan case dengan Nomor IndiHome tersebut walau tidak ada di judul/kode. Tidak ada param/response baru — FE tidak perlu perubahan apa pun. Catatan: karena menyisir seluruh fields (termasuk URL evidence), match bisa lebih banyak dari sebelumnya (mis. `q=youtube` menemukan case dengan link evidence YouTube).
 Fitur webhook internal (tanpa endpoint baru): setiap balasan solver yang ter-link ke case (via reply/chain/rule — semua jenis balasan, termasuk yang mengubah status jadi done) otomatis memicu notifikasi ke **grup default (test)**. Format pesan satu blok:
 
 ```

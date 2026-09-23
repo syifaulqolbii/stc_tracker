@@ -708,6 +708,23 @@ Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
    "testing notif"
    ```
 3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
+
+## Re-verify pasca-deploy (v1.24 search q menyisir fields)
+
+Fitur: `q` di list & export sekarang juga mencari di seluruh isi `fields` JSONB (no_indihome, order_id, case_id, msisdn, link evidence). Tanpa env/migrasi/dependency baru.
+
+```bash
+cd ~/stc_tracker
+git pull          # dapat commit v1.24.0
+docker compose build app && docker compose up -d app
+curl -s https://api.stc.syfa.site/health
+
+# search by Nomor IndiHome — harus menemukan case-nya:
+curl -s -H "X-API-Key: $KEY" "$API/api/cases?q=<nomor_IH_yang_ada>" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d), 'case')"
+
+# export dengan search yang sama — hasil sinkron:
+curl -s -H "X-API-Key: $KEY" -o /tmp/e.xlsx -w "%{http_code}\n" "$API/api/cases/export.xlsx?q=<nomor_IH_yang_ada>"
+```
 4. Log app: `docker logs moban-tracker --tail 50 | grep NOTIF` → `NOTIF case <kode> -> grup test (<chat_id>)`.
 5. Anti-loop: kalau grup default == grup asal balasan (mis. test di grup Test Development sendiri), notif TIDAK dikirim (by design, cegah loop).
 

@@ -2667,3 +2667,46 @@ class TestCaseDateRange:
         tc.get("/api/cases?status=open&group_id=2&date_from=2026-06-01")
         args = mock_cursor.execute.call_args[0][1]
         assert args == [False, "open", 2, datetime(2026, 6, 1)]
+
+
+
+# ============ Test search q menyisir fields JSONB (v1.24) ============
+
+class TestCaseSearchFields:
+    def _executed_sql_and_args(self, query, mock_waha):
+        mock_conn, mock_cursor = _make_mock_db()
+        mock_cursor.fetchall.return_value = []
+        with patch.object(main_module, "db", return_value=mock_conn),              patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            response = tc.get(f"/api/cases{query}")
+            assert response.status_code == 200
+        call = mock_cursor.execute.call_args_list[0][0]
+        return call[0], call[1]
+
+    def test_q_matches_fields_jsonb(self, mock_waha):
+        """Search q harus ikut menyisir c.fields::text (search by IH/order ID)."""
+        sql, args = self._executed_sql_and_args("?q=141410121054", mock_waha)
+        assert "c.fields::text ILIKE" in sql
+        # tiga pola %q%: case_code, title, fields
+        assert args.count("%141410121054%") == 3
+
+    def test_q_order_id(self, mock_waha):
+        """Search by order_id dari fields — pola arg tetap 3 (list & export bersama)."""
+        sql, args = self._executed_sql_and_args("?q=MOk4260831040012991", mock_waha)
+        assert "c.fields::text ILIKE" in sql
+        assert "%MOk4260831040012991%" in args
+
+    def test_q_title_still_works(self, mock_waha):
+        """Regresi jalur lama: q di judul/case_code tetap jalan."""
+        sql, args = self._executed_sql_and_args("?q=lurusan%20realm", mock_waha)
+        assert "c.case_code ILIKE" in sql and "c.title ILIKE" in sql
+        assert args.count("%lurusan realm%") == 3
+
+    def test_q_combined_with_status_filter(self, mock_waha):
+        """q + filter lain → keduanya masuk SQL dengan args berurutan benar."""
+        sql, args = self._executed_sql_and_args("?q=INC&status=open", mock_waha)
+        assert "c.status = %s" in sql
+        assert "c.fields::text ILIKE" in sql
+        # [include_deleted, status, q, q, q]
+        assert args[0] is False and args[1] == "open"
+        assert args[2:] == ["%INC%", "%INC%", "%INC%"]

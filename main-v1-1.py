@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.23.0",
+    version="1.24.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1473,8 +1473,10 @@ def _cases_filter_sql(status, case_type, area_id, regional_id,
         sql += " AND c.group_id = %s"
         args.append(group_id)
     if q:
-        sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s)"
-        args += [f"%{q}%", f"%{q}%"]
+        # v1.24: q juga menyisir fields (JSONB->text) supaya search by
+        # no_indihome / order_id / case_id / msisdn / link evidence bisa.
+        sql += " AND (c.case_code ILIKE %s OR c.title ILIKE %s OR c.fields::text ILIKE %s)"
+        args += [f"%{q}%", f"%{q}%", f"%{q}%"]
     if date_from:
         sql += " AND c.created_at >= %s"
         args.append(date_from)
