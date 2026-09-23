@@ -685,3 +685,30 @@ curl -s -X POST $API/api/cases/test-send -H "X-API-Key: $KEY" -H 'Content-Type: 
 ```
 ```
 
+
+## Re-verify pasca-deploy (v1.23 notifikasi balasan solver)
+
+Fitur: setiap balasan solver yang ter-link ke case otomatis memicu notifikasi ke grup default (test). Tanpa env baru, tanpa migrasi DB.
+
+```bash
+cd ~/stc_tracker
+git pull          # dapat commit v1.23.0
+docker compose build app && docker compose up -d app
+curl -s https://api.stc.syfa.site/health
+```
+
+Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
+
+1. Balas (reply) pesan case yang ada di grup ESCALATION dengan pesan apa pun (mis. "testing notif").
+2. Buka grup **Test Development** — harus muncul pesan:
+   ```
+   💬 Update Case
+   Ticket Remedy : INCxxxxx (IH ...)   | atau |   Case ID : 1-XXXX (IH ...)
+   Dibalas oleh <nama solver>:
+   "testing notif"
+   ```
+3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
+4. Log app: `docker logs moban-tracker --tail 50 | grep NOTIF` → `NOTIF case <kode> -> grup test (<chat_id>)`.
+5. Anti-loop: kalau grup default == grup asal balasan (mis. test di grup Test Development sendiri), notif TIDAK dikirim (by design, cegah loop).
+
+Catatan: semua jenis balasan solver dinotifikasi (termasuk obrolan santai yang ter-link case). Kalau nanti terlalu berisik, bisa ditambah filter (mis. hanya perubahan status) tanpa ubah struktur.

@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.22.0",
+    version="1.23.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -644,6 +644,69 @@ def link_and_update(case_id, wa_mid, author, body, status, note, source, confide
         conn.commit()
 
 
+# ------------------------------------------------ Notifikasi balasan solver (v1.23)
+
+NOTIF_BODY_MAX = 300  # batas panjang kutipan balasan di pesan notif
+
+
+async def notify_case_reply(case: dict, group_chat_id: str | None,
+                            author_name: str | None, body: str,
+                            parsed_status: str | None) -> None:
+    """Kirim notifikasi ke grup default (test) setiap ada balasan solver yang
+    ter-link ke case. Fire-and-forget: kegagalan WAHA/DB tidak boleh
+    menggagalkan update case itu sendiri.
+
+    Identifier menampilkan semua yang ada: Ticket Remedy dan/atau Case ID,
+    ditambah (IH <no_indihome>) kalau ada. Tanpa keduanya → fallback case_code.
+    """
+    try:
+        if not isinstance(case, dict):
+            return
+        notif_group = _get_default_group()
+        # isinstance guard: non-dict (test double) atau baris tidak valid → skip
+        if not isinstance(notif_group, dict) or not notif_group.get("chat_id"):
+            return
+        # Anti-loop: grup notif == grup asal pesan → jangan kirim (bot akan
+        # membalas grupnya sendiri dan notif-nya terdeteksi sebagai balasan lagi)
+        if notif_group["chat_id"] == group_chat_id:
+            return
+
+        f = case.get("fields") or {}
+        if isinstance(f, str):
+            try:
+                f = json.loads(f)
+            except Exception:
+                f = {}
+        parts = []
+        if f.get("ticket_remedy"):
+            parts.append(f"Ticket Remedy : {f['ticket_remedy']}")
+        if f.get("case_id"):
+            parts.append(f"Case ID : {f['case_id']}")
+        if not parts:
+            parts.append(f"Case : {case.get('case_code') or '-'}")
+        ident = " | ".join(parts)
+        if f.get("no_indihome"):
+            ident += f" (IH {f['no_indihome']})"
+
+        text_body = " ".join((body or "").split())  # newline → spasi, 1 blok rapi
+        if len(text_body) > NOTIF_BODY_MAX:
+            text_body = text_body[:NOTIF_BODY_MAX].rstrip() + "…"
+
+        lines = [
+            "💬 Update Case",
+            ident,
+            f"Dibalas oleh {author_name or 'Solver'}:",
+            f'"{text_body}"',
+        ]
+        if parsed_status:
+            lines.append(f"Status: {parsed_status}")
+
+        await waha_send("\n".join(lines), chat_id=notif_group["chat_id"])
+        log.info("NOTIF case %s -> grup test (%s)", case.get("case_code"), notif_group["chat_id"])
+    except Exception as e:
+        log.error("notify_case_reply gagal (non-fatal): %s", e)
+
+
 # ---------------------------------------------------------------- Lookup helpers
 
 def _resolve_sumber_ticket(name: str | None) -> int | None:
@@ -1017,6 +1080,9 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     # tetap ada di wa_messages (fix case-15 #2)
     link_and_update(case["id"], wa_mid, author, body_display,
                     parsed.get("status"), parsed.get("note") or body_display[:200], source, conf)
+    # Notifikasi balasan solver → grup default/test (v1.23). Fire-and-forget.
+    await notify_case_reply(case, group["chat_id"], author_name,
+                            body_display, parsed.get("status"))
     log.info("UPDATE %s <- %s (%s): %s", case["case_code"], author, source, parsed.get("status"))
     return True
 

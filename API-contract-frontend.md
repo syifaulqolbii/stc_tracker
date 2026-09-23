@@ -1701,6 +1701,19 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.23 (23 September 2026) — notifikasi balasan solver ke grup test
+Fitur webhook internal (tanpa endpoint baru): setiap balasan solver yang ter-link ke case (via reply/chain/rule — semua jenis balasan, termasuk yang mengubah status jadi done) otomatis memicu notifikasi ke **grup default (test)**. Format pesan satu blok:
+
+```
+💬 Update Case
+Ticket Remedy : INC01239221 | Case ID : 1-SO9BLGS (IH 141410121054)
+Dibalas oleh IT - SMOPS:
+"silahkan dilakukan pelurusan realm dari sisi upcf dengan radius terlebih dahulu rekan"
+Status: in_progress   ← baris ini hanya muncul kalau balasan mengubah status
+```
+
+Perilaku: identifier menampilkan **semua yang ada** (`Ticket Remedy` dan/atau `Case ID`, dipisah ` | `) + `(IH <no_indihome>)` kalau ada; keduanya kosong → fallback `Case : <case_code>`. Isi balasan dipotong maks 300 char. Nama solver dari resolve kontak (fallback LID). Guard anti-loop: kalau grup default == grup asal balasan, notif tidak dikirim. Notif bersifat fire-and-forget — kegagalan WAHA tidak menggagalkan update case. Tidak ada perubahan endpoint/kontrak response.
+
 ### v1.22 (21 September 2026) — filter rentang tanggal `date_from` / `date_to`
 Param baru di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`**: `date_from` & `date_to` (format `YYYY-MM-DD`, keduanya opsional & bisa satu saja). Filter pada **`created_at`** (tanggal case dibuat), **inklusif** di kedua ujung — `date_to=2026-08-31` memuat case yang dibuat 31 Agustus jam berapapun. Contoh: `?date_from=2026-06-01&date_to=2026-08-31` = 1 Juni s.d. 31 Agustus. Validasi: format salah / `date_from > date_to` → `422` dengan pesan jelas. Bisa dikombinasikan dengan semua filter lain (status, group_id, dll) dan pagination. Karena masuk ke shared SQL builder, list & export dijamin konsisten. Referensi detail + panduan integrasi FE: `docs/export-excel-frontend.md`.
 
