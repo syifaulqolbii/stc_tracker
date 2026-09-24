@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.24.0",
+    version="1.25.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -638,9 +638,16 @@ def link_and_update(case_id, wa_mid, author, body, status, note, source, confide
                ON CONFLICT (wa_message_id) DO NOTHING""",
             (case_id, wa_mid, author, body, status, note, source, confidence),
         )
+        # v1.25: SEMUA balasan yang ter-link ke case mengangkat updated_at,
+        # bukan hanya yang mengubah status — supaya sort list "terbaru
+        # di atas" mencerminkan aktivitas terakhir di grup WA, dan reminder
+        # idle_hours ikut reset saat case ramai dibahas.
         if status:
             cur.execute("UPDATE cases SET status = %s, updated_at = now() WHERE id = %s",
                         (status, case_id))
+        else:
+            cur.execute("UPDATE cases SET updated_at = now() WHERE id = %s",
+                        (case_id,))
         conn.commit()
 
 

@@ -1701,6 +1701,14 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.25 (24 September 2026) — sort "terbaru di atas" mengikuti aktivitas terakhir
+Perubahan perilaku (tanpa endpoint/param/response baru): **semua** balasan solver yang ter-link ke case (reply/chain/rule — termasuk yang tidak mengubah status) sekarang mengangkat `updated_at` case. Sebelumnya hanya balasan ber-keyword status yang menaikkan `updated_at`, sehingga case yang ramai dibahas di WA tetap terurut di bawah. Efeknya:
+
+- `GET /api/cases` (sort `updated_at DESC`): case dengan balasan/aktivitas terakhir selalu di baris paling atas — FE tidak perlu perubahan apa pun
+- Reminder (`idle_hours`): idle time ikut reset tiap ada balasan — case yang sedang ramai dibahas tidak dianggap idle, sesuai desain anti-spam reminder
+
+Catatan migrasi data: case yang dibuat sebelum rilis ini punya `updated_at` lama (hanya pernah di-bump saat perubahan status) — posisi sort historis tidak diubah retroaktif.
+
 ### v1.24 (23 September 2026) — search `q` ikut menyisir fields
 Peningkatan search di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`** (shared SQL builder): `q` sekarang mencari di `case_code`, `title`, **dan seluruh isi `fields`** (no_indihome, order_id, case_id, msisdn, link evidence, dll). Contoh: `?q=141410121054` menemukan case dengan Nomor IndiHome tersebut walau tidak ada di judul/kode. Tidak ada param/response baru — FE tidak perlu perubahan apa pun. Catatan: karena menyisir seluruh fields (termasuk URL evidence), match bisa lebih banyak dari sebelumnya (mis. `q=youtube` menemukan case dengan link evidence YouTube).
 Fitur webhook internal (tanpa endpoint baru): setiap balasan solver yang ter-link ke case (via reply/chain/rule — semua jenis balasan, termasuk yang mengubah status jadi done) otomatis memicu notifikasi ke **grup default (test)**. Format pesan satu blok:

@@ -189,3 +189,31 @@ class TestCaseReplyNotification:
             await main_module.handle_message(_payload())
             text = mock_send.call_args[0][0]
             assert "Dibalas oleh Furqon Nugroho:" in text
+
+
+
+# ============ Test bump updated_at tiap balasan solver (v1.25) ============
+
+class TestLinkAndUpdateBumpsUpdatedAt:
+    """v1.25: SEMUA balasan ter-link harus UPDATE cases.updated_at, bukan hanya
+    yang mengubah status — supaya sort list "terbaru di atas" reflektif."""
+
+    def _calls(self, status):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            main_module.link_and_update(56, "wm-1", "author@lid", "ijin up", status, "note", "reply", None)
+        return [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+
+    def test_reply_without_status_bumps_updated_at(self):
+        """Balasan TANPA keyword status → tetap ada UPDATE updated_at (inti bug)."""
+        sqls = self._calls(status=None)
+        bump = [s for s in sqls if "UPDATE cases SET updated_at = now()" in s]
+        assert len(bump) == 1
+
+    def test_reply_with_status_updates_both(self):
+        """Balasan dengan keyword status → UPDATE status + updated_at sekaligus."""
+        sqls = self._calls(status="done")
+        assert any("UPDATE cases SET status = %s, updated_at = now()" in s for s in sqls)
+        # tidak boleh ada bump ganda
+        assert not any("UPDATE cases SET updated_at = now() WHERE" in s and "status" not in s
+                       for s in sqls)

@@ -709,6 +709,30 @@ Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
    ```
 3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
 
+## Re-verify pasca-deploy (v1.25 sort by aktivitas terakhir)
+
+Fitur: semua balasan solver (reply/chain) mengangkat `updated_at` case — case dengan aktivitas terakhir selalu di atas di list. Tanpa env/migrasi/dependency baru.
+
+```bash
+cd ~/stc_tracker
+git pull          # dapat commit v1.25.0
+docker compose build app && docker compose up -d app
+curl -s https://api.stc.syfa.site/health
+```
+
+Verifikasi manual (via WA + API):
+
+1. Pilih case yang posisinya di bawah list, catat `updated_at`-nya:
+   ```bash
+   curl -s -H "X-API-Key: $KEY" "$API/api/cases/56" | python3 -c "import sys,json; print(json.load(sys.stdin)['case']['updated_at'])"
+   ```
+2. Balas (reply) pesan case itu di grup dengan pesan TANPA keyword status (mis. "testing sort").
+3. Cek ulang `updated_at` — harus naik ke waktu sekarang, dan case naik ke urutan teratas di `GET /api/cases`:
+   ```bash
+   curl -s -H "X-API-Key: $KEY" "$API/api/cases?limit=3" | python3 -c "import sys,json; d=json.load(sys.stdin); print([c['case_code'] for c in d['data']])"
+   ```
+4. Cek log tidak ada error: `docker logs moban-tracker --since 5m 2>&1 | grep -iE 'error|traceback'`
+
 ## Re-verify pasca-deploy (v1.24 search q menyisir fields)
 
 Fitur: `q` di list & export sekarang juga mencari di seluruh isi `fields` JSONB (no_indihome, order_id, case_id, msisdn, link evidence). Tanpa env/migrasi/dependency baru.
