@@ -43,7 +43,8 @@ if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
 fi
 
 OLD_IMAGE_ID=$(docker inspect "$CONTAINER" --format '{{.Image}}')
-OLD_VERSION=$(docker exec "$CONTAINER" wget -qO- http://localhost:3000/api/version 2>/dev/null || echo "?")
+WAHA_KEY_VAL=$(docker inspect "$CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E "^WAHA_API_KEY=" | head -1 | cut -d= -f2-)
+OLD_VERSION=$(docker exec "$CONTAINER" wget -qO- --header="X-Api-Key: $WAHA_KEY_VAL" http://localhost:3000/api/version 2>/dev/null   | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null || echo "?")
 log "versi lama: $OLD_VERSION"
 
 # ---------------------------------------------------------------- 1. pull
@@ -111,7 +112,7 @@ for i in $(seq 1 12); do   # maks 60 detik
   [[ -n "$STATUS" ]] && break
 done
 
-NEW_VERSION=$(docker exec "$CONTAINER" wget -qO- http://localhost:3000/api/version 2>/dev/null || echo "?")
+NEW_VERSION=$(docker exec "$CONTAINER" wget -qO- --header="X-Api-Key: $WAHA_KEY_VAL" http://localhost:3000/api/version 2>/dev/null   | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null || echo "?")
 log "versi baru: $NEW_VERSION | sessions: ${STATUS:-TIDAK TERBACA}"
 
 if echo "$STATUS" | grep -q "WORKING"; then
