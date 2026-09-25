@@ -709,6 +709,24 @@ Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
    ```
 3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
 
+## Re-verify pasca-deploy (v1.27 anti double-send)
+
+Fitur: reply dengan teks + attachment kini hanya menghasilkan 1 pesan WA per media (teks jadi caption), bukan teks terpisah + media. Tanpa env/migrasi/dependency baru.
+
+```bash
+cd ~/stc_tracker
+git pull          # dapat commit v1.27.0
+docker compose build app && docker compose up -d app
+curl -s https://api.stc.syfa.site/health
+```
+
+Verifikasi manual (via web/WA):
+
+1. Dari web, balas 1 case dengan TEKS + 1 gambar.
+2. Grup WA harus menerima **1 pesan gambar ber-caption teks** — bukan 2 pesan (teks terpisah lalu gambar).
+3. Ulangi dengan teks saja → tetap 1 pesan teks; file PDF + teks → 1 pesan file ber-caption teks.
+4. Log app bersih: `docker logs moban-tracker --since 5m 2>&1 | grep -iE 'error|traceback'`
+
 ## Maintenance WAHA (WEBJS engine)
 
 ### Latar belakang — kenapa WAHA perlu di-update rutin

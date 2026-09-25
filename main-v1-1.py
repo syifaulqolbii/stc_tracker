@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.26.0",
+    version="1.27.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1896,7 +1896,10 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
             raise HTTPException(status_code=413, detail=f"{att.filename} melebihi 5 MB")
         decoded.append((ext, raw))
     sent: list[str] = []
-    if inp.message:
+    # v1.27 anti double-send: bila ada attachment, teks TIDAK dikirim terpisah —
+    # ia menjadi caption media (image maupun file). Sebelumnya teks terkirim via
+    # sendText LALU dikirim lagi sebagai caption → grup menerima 2 pesan isinya sama.
+    if inp.message and not inp.attachments:
         mid = await waha_send(inp.message,
                               mentions=[m.number for m in inp.mentions] or None,
                               reply_to=inp.reply_to_wa_message_id,
@@ -1923,10 +1926,9 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
                    "file": {"mimetype": att.mimetype, "filename": att.filename,
                             "data": att.data_base64},
                    "reply_to": inp.reply_to_wa_message_id}
-        if endpoint == "sendImage":
-            payload["caption"] = inp.message or ""
-        else:
-            payload["caption"] = att.filename
+        # v1.27: teks jadi caption untuk SEMUA jenis media (konsisten anti double-send);
+        # tanpa teks → fallback nama file (file) / kosong (image)
+        payload["caption"] = inp.message or (att.filename if endpoint != "sendImage" else "")
         mid = await waha_send_media(endpoint, payload)
         if mid:
             store_message(mid, inp.reply_to_wa_message_id, None, inp.message or att.filename,

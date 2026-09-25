@@ -2718,3 +2718,71 @@ class TestCaseSearchFields:
         # [include_deleted, status, q, q, q]
         assert args[0] is False and args[1] == "open"
         assert args[2:] == ["%INC%", "%INC%", "%INC%"]
+
+
+
+# ============ Test anti double-send reply media (v1.27) ============
+
+class TestCaseRepliesNoDoubleSend(TestCaseReplies):
+    """v1.27: teks + attachment → teks TIDAK dikirim via sendText terpisah;
+    ia hanya jadi caption media. Sebelumnya grup menerima 2 pesan isinya sama."""
+
+    def _send_calls(self, mock_waha):
+        return [c for c in mock_waha.post.call_args_list if c.args]
+
+    def test_text_plus_image_single_message(self, mock_waha, tmp_path, monkeypatch):
+        """teks + 1 image → HANYA sendImage (1 pesan), sendText tidak dipanggil."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                                 None, None, None, None]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={
+                "message": "siap, kami cek dulu",
+                "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "bukti.jpg", "mimetype": "image/jpeg",
+                                 "data_base64": _b64.b64encode(b"fakejpeg").decode()}]})
+            assert r.status_code == 200
+            assert len(r.json()["wa_message_ids"]) == 1
+            calls = self._send_calls(mock_waha)
+            paths = [c.args[0] for c in calls]
+            assert not any("sendText" in p for p in paths), f"sendText dipanggil: {paths}"
+            assert any("sendImage" in p for p in paths)
+            img_call = next(c for c in calls if "sendImage" in c.args[0])
+            payload = img_call.kwargs.get("json") or img_call.args[1]
+            assert payload["caption"] == "siap, kami cek dulu"
+
+    def test_text_only_still_sendtext(self, mock_waha):
+        """teks saja (tanpa attachment) → tetap sendText (regresi jalur lama)."""
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                                 None]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={
+                "message": "siap", "reply_to_wa_message_id": "solver1"})
+            assert r.status_code == 200
+            paths = [c.args[0] for c in self._send_calls(mock_waha)]
+            assert any("sendText" in p for p in paths)
+            assert not any("sendImage" in p or "sendFile" in p for p in paths)
+
+    def test_text_plus_pdf_single_message(self, mock_waha, tmp_path, monkeypatch):
+        """teks + PDF → HANYA sendFile dengan caption = teks (bukan nama file)."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                                 {"wa_message_id": "solver1", "case_id": 6},
+                                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                                 None, None, None, None]) as (tc, _):
+            r = tc.post("/api/cases/6/replies", json={
+                "message": "ini dokumennya",
+                "reply_to_wa_message_id": "solver1",
+                "attachments": [{"filename": "doc.pdf", "mimetype": "application/pdf",
+                                 "data_base64": _b64.b64encode(b"pdfdata").decode()}]})
+            assert r.status_code == 200
+            calls = self._send_calls(mock_waha)
+            paths = [c.args[0] for c in calls]
+            assert not any("sendText" in p for p in paths)
+            file_call = next(c for c in calls if "sendFile" in c.args[0])
+            payload = file_call.kwargs.get("json") or file_call.args[1]
+            assert payload["caption"] == "ini dokumennya"

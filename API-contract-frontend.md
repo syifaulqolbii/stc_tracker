@@ -1723,6 +1723,17 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.27 (25 September 2026) — anti double-send: teks + attachment = 1 pesan WA
+Perbaikan perilaku `POST /api/cases/{id}/replies` (tanpa perubahan request/response): bila request berisi `message` **dan** `attachments`, teks TIDAK lagi dikirim sebagai pesan `sendText` terpisah — ia hanya menjadi **caption** media. Sebelumnya grup menerima 2 pesan isinya sama (teks, lalu gambar/PDF ber-caption teks yang sama). Aturan baru:
+
+| Payload | Pesan WA yang terkirim |
+|---|---|
+| teks saja | 1 pesan teks (reply) — tidak berubah |
+| media saja (tanpa teks) | 1 pesan media (caption image kosong / caption file = nama file) |
+| teks + 1..3 media | 1..3 pesan media ber-caption teks — TANPA pesan teks terpisah |
+
+Implikasi FE: kirim `message` + `attachments` dalam SATU request sekarang menghasilkan pesan WA yang benar-benar satu; tidak perlu mengosongkan `message` saat menyertakan attachment.
+
 ### v1.26 (24 September 2026) — fix pengiriman media reply: base64 langsung, bukan URL
 Hotfix `POST /api/cases/{id}/replies`: payload file ke WAHA kini mengirim `file.data` (base64 dari request) alih-alih `file.url` (URL publik file). Penyebab: WAHA di Docker gagal men-download `public_url` (hairpin NAT/DNS/SSL ke domain publiknya sendiri) → WAHA balikin `500` sehingga reply media dari web selalu gagal. Dengan base64, WAHA tidak perlu fetch apa pun. **Tidak ada perubahan request/response API** — FE tetap mengirim `data_base64` seperti sebelumnya. File tetap disimpan di server untuk timeline detail case (`media_url` tetap terisi).
 
