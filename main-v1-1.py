@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.25.0",
+    version="1.26.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1914,8 +1914,14 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
             f.write(raw)
         public_url = f"{BACKEND_PUBLIC_URL}/api/media/file/{fname}"
         endpoint = "sendImage" if att.mimetype.lower().startswith("image/") else "sendFile"
+        # v1.26: kirim media ke WAHA pakai file.data (base64) BUKAN file.url.
+        # WAHA di Docker kerap gagal men-download public_url (hairpin NAT /
+        # DNS / SSL), memicu "WAHA error: 500". Base64 sudah ada di request
+        # (tervalidasi di atas), jadi WAHA tidak perlu fetch apa pun.
+        # File tetap disimpan ke MEDIA_DIR untuk timeline detail case.
         payload = {"session": WAHA_SESSION, "chatId": group["chat_id"],
-                   "file": {"mimetype": att.mimetype, "filename": att.filename, "url": public_url},
+                   "file": {"mimetype": att.mimetype, "filename": att.filename,
+                            "data": att.data_base64},
                    "reply_to": inp.reply_to_wa_message_id}
         if endpoint == "sendImage":
             payload["caption"] = inp.message or ""

@@ -1723,6 +1723,9 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.26 (24 September 2026) — fix pengiriman media reply: base64 langsung, bukan URL
+Hotfix `POST /api/cases/{id}/replies`: payload file ke WAHA kini mengirim `file.data` (base64 dari request) alih-alih `file.url` (URL publik file). Penyebab: WAHA di Docker gagal men-download `public_url` (hairpin NAT/DNS/SSL ke domain publiknya sendiri) → WAHA balikin `500` sehingga reply media dari web selalu gagal. Dengan base64, WAHA tidak perlu fetch apa pun. **Tidak ada perubahan request/response API** — FE tetap mengirim `data_base64` seperti sebelumnya. File tetap disimpan di server untuk timeline detail case (`media_url` tetap terisi).
+
 ### v1.25 (24 September 2026) — sort "terbaru di atas" mengikuti aktivitas terakhir
 Perubahan perilaku (tanpa endpoint/param/response baru): **semua** balasan solver yang ter-link ke case (reply/chain/rule — termasuk yang tidak mengubah status) sekarang mengangkat `updated_at` case. Sebelumnya hanya balasan ber-keyword status yang menaikkan `updated_at`, sehingga case yang ramai dibahas di WA tetap terurut di bawah. Efeknya:
 

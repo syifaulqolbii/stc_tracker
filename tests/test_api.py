@@ -2376,6 +2376,14 @@ class TestCaseReplies:
                                  "data_base64": _b64.b64encode(b"fakejpeg").decode()}]})
             assert r.status_code == 200
             assert len(r.json()["wa_message_ids"]) == 1
+            # v1.26 regression: media ke WAHA HARUS via file.data (base64),
+            # bukan file.url (WAHA di Docker gagal download public_url → 500)
+            media_calls = [c for c in mock_waha.post.call_args_list
+                           if "sendImage" in str(c.args[0]) or "sendFile" in str(c.args[0])]
+            assert media_calls, "WAHA sendImage/sendFile harus dipanggil"
+            payload = media_calls[0].kwargs.get("json") or media_calls[0].args[1]
+            assert payload["file"]["data"] == _b64.b64encode(b"fakejpeg").decode()
+            assert "url" not in payload["file"]
 
     def test_reply_empty_rejected(self, mock_waha):
         with self._reply_client([]) as (tc, _):

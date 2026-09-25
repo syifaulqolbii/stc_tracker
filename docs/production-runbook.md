@@ -709,6 +709,27 @@ Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
    ```
 3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
 
+## Re-verify pasca-deploy (v1.26 fix media reply base64)
+
+Fitur: reply media/gambar dari web kini mengirim base64 langsung ke WAHA (bukan URL) — WAHA tidak lagi gagal men-download public_url. Tanpa env/migrasi/dependency baru.
+
+```bash
+cd ~/stc_tracker
+git pull          # dapat commit v1.26.0
+docker compose build app && docker compose up -d app
+curl -s https://api.stc.syfa.site/health
+```
+
+Verifikasi manual (via web/WA):
+
+1. Dari web, balas 1 case dengan teks + 1 image attachment.
+2. Grup WA harus menerima gambar dengan caption teks (sebelumnya: response `WAHA error: 500`).
+3. Detail case via API harus tetap menampilkan `media_url` untuk attachment itu:
+   ```bash
+   curl -s -H "X-API-Key: $KEY" "$API/api/cases/<id>" | python3 -c "import sys,json; d=json.load(sys.stdin); print([m.get('media_url') for m in d['messages'] if m.get('media_url')])"
+   ```
+4. Log app bersih: `docker logs moban-tracker --since 5m 2>&1 | grep -iE 'error|traceback'`
+
 ## Re-verify pasca-deploy (v1.25 sort by aktivitas terakhir)
 
 Fitur: semua balasan solver (reply/chain) mengangkat `updated_at` case — case dengan aktivitas terakhir selalu di atas di list. Tanpa env/migrasi/dependency baru.
