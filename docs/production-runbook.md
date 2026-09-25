@@ -709,6 +709,65 @@ Verifikasi manual (via WA, bukan curl — fitur ini reaktif ke webhook WAHA):
    ```
 3. Balas dengan keyword status (mis. "proses INCxxxxx") — baris `Status: in_progress` harus muncul.
 
+## Maintenance WAHA (WEBJS engine)
+
+### Latar belakang — kenapa WAHA perlu di-update rutin
+
+Engine WEBJS = Chrome headless yang menjalankan WhatsApp Web (dikendalikan otomatis). WhatsApp bisa mengubah JavaScript WhatsApp Web **server-side kapan pun** (web app selalu load JS terbaru dari `static.whatsapp.net`). Ketika itu terjadi:
+
+- Library whatsapp-web.js di dalam WAHA belum tahu pola baru → error internal
+- **Gejala khas:** `sendText` tetap jalan (201), tapi `sendImage`/`sendFile` 500 dengan stack berisi `static.whatsapp.net` / pesan `must include an id property` (kasus nyata 25 Sep 2026 — fix: update image WAHA, bukan kode backend)
+
+Rutinitas update bulanan mencegah gejala ini muncul mendadak.
+
+### Prosedur otomatis (rekomendasi) — cron bulanan
+
+Script `scripts/update-waha.sh` melakukan: pull image → recreate **hanya jika ada image baru** (config identik: env lama dibaca dari container, volume sessions & network `stc_tracker_moban-net` dipertahankan) → verifikasi session WORKING + health backend. Session/QR aman karena tersimpan di named volume `waha_waha_sessions`.
+
+Pasang di crontab (`crontab -e`), jalan tiap tanggal 1 jam 04:15:
+
+```cron
+15 4 1 * * cd /home/ubuntu/stc_tracker && bash scripts/update-waha.sh >> backups/update-waha.log 2>&1
+```
+
+Cek hasilnya: `tail backups/update-waha.log` — baris `SELESAI ✅` = sukses, atau `image tidak berubah` = sudah terbaru (tanpa downtime).
+
+`--dry-run` untuk sekadar cek tanpa mengubah apa pun: `bash scripts/update-waha.sh --dry-run`.
+
+### Prosedur manual (jika script bermasalah)
+
+```bash
+# 1. Catat config lama:
+docker inspect waha --format '{{json .Config.Env}}'
+docker inspect waha --format '{{json .HostConfig.Binds}}'
+docker inspect waha --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"
+"}}{{end}}'
+
+# 2. Update:
+docker pull devlikeapro/waha:chrome
+docker stop waha && docker rm waha
+
+# 3. Recreate (env dari output step 1; PENTING: volume sessions sama & connect ke stc_tracker_moban-net):
+docker run -d --name waha --restart unless-stopped -p 127.0.0.1:3000:3000   -v waha_waha_sessions:/app/.sessions   -e WAHA_API_KEY=<dari step 1>   -e WAHA_DASHBOARD_USERNAME=<...> -e WAHA_DASHBOARD_PASSWORD=<...>   -e WHATSAPP_SWAGGER_USERNAME=<...> -e WHATSAPP_SWAGGER_PASSWORD=<...>   -e TZ=Asia/Jakarta -e WHATSAPP_DEFAULT_ENGINE=WEBJS   devlikeapro/waha:chrome
+docker network connect stc_tracker_moban-net waha
+
+# 4. Verifikasi:
+sleep 40
+docker exec waha wget -qO- --header="X-Api-Key: $WAHA_KEY" http://localhost:3000/api/sessions   # harus WORKING
+curl -s https://api.stc.syfa.site/health                                                        # waha: ok
+```
+
+### Diagnosis cepat: kirim media gagal 500
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| `sendText` OK, `sendImage`/`sendFile` 500, stack berisi `static.whatsapp.net` | WhatsApp Web berubah, engine WAHA lama | Update image (prosedur di atas) |
+| Semua send gagal / session bukan WORKING | Session putus | Dashboard WAHA → scan QR ulang; cek ulang config webhook session |
+| `Cannot POST /api/{session}/sendImage` (404) | Salah path API | WAHA ini pakai `/api/sendImage` + `session` di body (bukan path param) |
+| Backend `waha: not ok` di /health | Container WAHA tidak di network `stc_tracker_moban-net` | `docker network connect stc_tracker_moban-net waha` |
+
+Catatan arsitektur terkait (v1.26): backend mengirim media ke WAHA via `file.data` (base64 langsung), bukan `file.url` — WAHA tidak perlu men-download apa pun, sehingga tidak rentan hairpin NAT/DNS. Jangan kembalikan ke `file.url`.
+
 ## Re-verify pasca-deploy (v1.26 fix media reply base64)
 
 Fitur: reply media/gambar dari web kini mengirim base64 langsung ke WAHA (bukan URL) — WAHA tidak lagi gagal men-download public_url. Tanpa env/migrasi/dependency baru.
