@@ -603,6 +603,28 @@ Content-Type: application/json
 
 **Alur FE:** tombol **Balas** di tiap bubble solver di timeline → form (textarea + picker ≤3 file) → encode base64 → POST → refresh timeline.
 
+**Paste image dari clipboard (tanpa backend baru):** attachment base64 di endpoint ini 100% kompatibel dengan paste image (Ctrl+V). Alur FE:
+
+```js
+el.addEventListener("paste", (e) => {
+  const img = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
+  if (!img) return;                     // paste teks biasa → biarkan default
+  e.preventDefault();
+  const file = img.getAsFile();
+  const reader = new FileReader();
+  reader.onload = () => {
+    attachments.push({
+      filename: file.name || `paste-${Date.now()}.png`,
+      mimetype: img.type,               // clipboard selalu image/png atau image/jpeg
+      data_base64: reader.result.split(",")[1],  // strip prefix "data:...;base64,"
+    });
+  };
+  reader.readAsDataURL(file);
+});
+```
+
+Validasi yang tetap berlaku sama seperti upload biasa: whitelist MIME (clipboard image selalu `image/png`/`image/jpeg`, aman), maks 5 MB decoded per file (`413` kalau lewat — screenshot sangat besar bisa kena), maks 3 file. Payload JSON ±33% lebih besar dari binary — wajar untuk reply WA.
+
 > ⚠️ **Selalu balas lewat web, jangan dari HP bot.** Pesan yang diketik manual dari akun bot (`fromMe=true`) di-skip webhook sehingga tidak tercatat di `wa_messages` — reply-chain putus dan balasan solver berikutnya tidak ter-link ke case. Pesan via endpoint ini dicatat (`from_me=true`, `quoted_id` = pesan solver, `case_id` terisi) sehingga rantai lanjut (`source=chain`).
 
 ### Contoh payload per use case `POST /api/cases/{id}/replies`
