@@ -1512,7 +1512,7 @@ def _dt_fmt(v):
          summary="Export case ke Excel (.xlsx)",
          description="Download file Excel berisi SEMUA case yang lolos filter (tanpa pagination). "
                      "Filter identik dengan GET /api/cases: status, case_type, area_id, regional_id, "
-                     "sumber_ticket, group_id, q, include_deleted. Header bold + freeze pane.")
+                     "sumber_ticket, group_id, q, include_deleted. Header bold, kolom sudah disesuaikan lebar.")
 def export_cases_xlsx(
     request: Request,
     status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
@@ -1562,9 +1562,15 @@ def export_cases_xlsx(
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    # Header bold (WriteOnlyCell diperlukan untuk styling di mode write_only)
+    # Header bold (WriteOnlyCell diperlukan untuk styling di mode write_only).
+    # Font HARUS di-set ke cell SEBELUM append — sekadar membuat Font tidak berefek.
     header_font = Font(bold=True)
-    ws.append([WriteOnlyCell(ws, value=c) for c in EXPORT_COLUMNS])
+    header_cells = []
+    for c in EXPORT_COLUMNS:
+        cell = WriteOnlyCell(ws, value=c)
+        cell.font = header_font
+        header_cells.append(cell)
+    ws.append(header_cells)
     # catatan: write_only tidak mendukung freeze_panes — trade-off hemat memori
     for row in data:
         ws.append([_coerce_cell(v) for v in row])

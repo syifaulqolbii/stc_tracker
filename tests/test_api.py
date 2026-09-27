@@ -2567,6 +2567,7 @@ class TestCaseExport:
         resp = self._export(tc, mock_cursor)
         wb = load_workbook(io.BytesIO(resp.content))
         ws = wb["cases"]
+        assert ws.cell(1, 1).font.bold is True  # header harus benar-benar bold
         rows = list(ws.iter_rows(values_only=True))
         assert rows[0] == (
             "ID", "Case Code", "Jenis Case", "Judul", "Status", "Nomor Indihome",
