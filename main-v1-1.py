@@ -197,7 +197,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.29.0",
+    version="1.30.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -475,8 +475,18 @@ PCT_RE = re.compile(r"(\d{1,3})\s*%")
 #   tersebut TIDAK lagi mengubah status (tetap tercatat di progress_updates).
 # - Balasan solver PERTAMA pada case open otomatis jadi in_progress (lihat
 #   handle_message) — case yang sudah dibalas dianggap sedang dikerjakan.
-DONE_KW = ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus", "completed"]
-PROG_KW = ["proses", "progress", "diproses", "otw", "dicek", "cek dulu", "follow up", "fu"]
+# v1.30: keyword status pakai WORD BOUNDARY (\b...\b), bukan substring —
+# "diluruskan"/"terlurus" tidak boleh match "lurus" (case INC000024263663
+# salah jadi done). "lurus" sendiri dihapus dari DONE_KW karena di grup ini
+# artinya "realm sudah lurus" (aligned), bukan "case selesai".
+# Guard negasi: "belum/belum bisa/belum sempat + <done-kw>" tidak jadi done.
+_DONE_KW_WORDS = ["done", "selesai", "beres", "kelar", "solved", "closed",
+                  "terkirim", "completed"]
+# Negator bisa jauh dari done-kw ("belum bisa [dicek] ... selesai"), jadi
+# window 60 char dan done-kw boleh di posisi grup 2 ATAU setelahnya.
+_DONE_NEGATION_RE = re.compile(r"\b(belum|masih\s+belum|belum\s+bisa|belum\s+sempat)\b", re.I)
+_DONE_KW_RE = re.compile(r"\b(" + "|".join(_DONE_KW_WORDS) + r")\b", re.I)
+PROG_KW_RE = re.compile(r"\b(proses|progress|diproses|otw|dicek|cek\s+dulu|follow\s+up|fu)\b", re.I)
 
 
 def parse_rule(text: str) -> dict:
@@ -488,9 +498,24 @@ def parse_rule(text: str) -> dict:
     if m:
         out["progress"] = min(100, int(m.group(1)))
     low = text.lower()
-    if any(k in low for k in DONE_KW):
+    # v1.30: guard negasi — "belum selesai/belum done/dst." tidak dianggap done.
+    # done-kw dianggap ternegasi jika ada negator DALAM window 60 char SEBELUM
+    # dia dan tidak ada kata bermakna 'tapi/sudah' di antaranya (pergantian klausa).
+    done_matches = []
+    negators = [m.span() for m in _DONE_NEGATION_RE.finditer(text)]
+    for m in _DONE_KW_RE.finditer(text):
+        negated = False
+        for s, e in negators:
+            if 0 < m.start() - e <= 60:
+                between = text[e:m.start()].lower()
+                if not re.search(r"\b(tapi|tapi\s+mungkin|namun|eh\s+sudah|ternyata\s+sudah)\b", between):
+                    negated = True
+                    break
+        if not negated:
+            done_matches.append(m)
+    if done_matches:
         out["status"] = "done"
-    elif any(k in low for k in PROG_KW):
+    elif PROG_KW_RE.search(low):
         out["status"] = "in_progress"
     return out
 

@@ -1723,6 +1723,16 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.30 (29 September 2026) — fix false-positive keyword status (word boundary + guard negasi)
+Perbaikan parsing status dari balasan WA — **tanpa perubahan endpoint/response**. Kasus nyata: case INC000024263663 salah berubah jadi `done` karena pesan *"...sudah diluruskan sesuai dengan UFO..."* — substring `lurus` match di dalam kata `diluruskan`. Perbaikan:
+
+- **Keyword status kini pakai word boundary** (kata utuh): `diluruskan`, `terlurus`, `fulfill` dls. tidak lagi memicu match.
+- **`lurus` dihapus dari keyword done** — di grup teknis artinya "realm sudah lurus" (aligned), bukan case selesai.
+- **Guard negasi**: `belum selesai / belum done / belum bisa selesai / masih belum selesai` TIDAK mengubah status. Negator diikuti kata penghubung `tapi/namun` tetap menghormati done setelahnya ("belum sempat cek, tapi sudah completed" → done).
+- Keyword done/in_progress utuh lainnya tidak berubah (done, selesai, beres, kelar, solved, closed, terkirim, completed; proses, progress, diproses, otw, dicek, cek dulu, follow up, fu).
+
+Implikasi FE: tidak ada. Case yang salah status cukup dikoreksi via `POST /api/cases/{id}/status`.
+
 ### v1.29 (29 September 2026) — skema status disederhanakan: open → in_progress → done
 Perubahan perilaku parsing status dari balasan WA (tanpa endpoint/param/response baru, **filter `status=issue` di list/export masih berfungsi** untuk data historis):
 

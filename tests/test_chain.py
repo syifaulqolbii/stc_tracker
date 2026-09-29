@@ -166,7 +166,7 @@ class TestParseRule:
         assert result.get("progress") == 75
 
     def test_done_keywords(self):
-        for kw in ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus", "completed"]:
+        for kw in ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "completed"]:
             result = main_module.parse_rule(f"case {kw}")
             assert result["status"] == "done", f"Keyword '{kw}' should map to done"
 
@@ -204,6 +204,50 @@ class TestParseRule:
     def test_percentage_cap_at_100(self):
         result = main_module.parse_rule("INC000023470570 150%")
         assert result["progress"] == 100
+
+
+class TestParseRuleWordBoundary:
+    """v1.30: keyword status pakai word boundary — substring match memicu
+    false positive (case INC000024263663 salah jadi done karena kata
+    'diluruskan' match 'lurus')."""
+
+    def test_diluruskan_not_done(self):
+        """'diluruskan' mengandung 'lurus' → TIDAK boleh jadi done."""
+        assert main_module.parse_rule(
+            "untuk di radiusnya sudah diluruskan sesuai dengan UFO, evidence saya lampirkan").get("status") is None
+
+    def test_lurus_word_not_done(self):
+        """'lurus' dihapus dari DONE_KW — di grup artinya 'realm sudah lurus'
+        (aligned), bukan case selesai."""
+        assert main_module.parse_rule(
+            "infonya sudah lurus antara realm upcc dan radius nya yaitu telkom.net").get("status") is None
+        assert main_module.parse_rule("terlurus semuanya").get("status") is None
+
+    def test_done_words_still_match_with_boundary(self):
+        """Keyword utuh tetap terdeteksi setelah migrasi ke word boundary."""
+        for text in ("sudah selesai mas", "case ini beres", "sudah done",
+                     "sudah completed ya", "solved", "terkirim"):
+            assert main_module.parse_rule(text)["status"] == "done", text
+
+    def test_in_progress_words_still_match_with_boundary(self):
+        for text in ("proses dulu ya", "saya cek dulu", "otw ke lokasi",
+                     "follow up ke tim terkait", "fu dulu"):
+            assert main_module.parse_rule(text)["status"] == "in_progress", text
+
+    def test_fu_only_matches_whole_word(self):
+        """'fu' harus kata utuh — tidak match di dalam kata lain (mis. 'fulfill')."""
+        assert main_module.parse_rule("sudah fulfill persyaratan").get("status") is None
+        assert main_module.parse_rule("fu dulu ya")["status"] == "in_progress"
+
+    def test_negation_belum_selesai_not_done(self):
+        """'belum selesai/belum done' TIDAK boleh jadi done."""
+        for text in ("case ini belum selesai", "belum done mas",
+                     "belum bisa selesai hari ini", "masih belum selesai"):
+            assert main_module.parse_rule(text).get("status") is None, text
+
+    def test_negation_does_not_block_other_done_words(self):
+        """'belum' yang TIDAK diikuti done-kw tidak memblokir done lain."""
+        assert main_module.parse_rule("belum sempat cek, tapi order sudah completed")["status"] == "done"
 
 
 class TestExtractQuotedId:
