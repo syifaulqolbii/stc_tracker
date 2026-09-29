@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.28.0",
+    version="1.29.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -468,8 +468,13 @@ async def resolve_contact_name(author: str | None) -> str | None:
 
 INC_RE = re.compile(r"\bINC\d{9,}\b", re.I)
 PCT_RE = re.compile(r"(\d{1,3})\s*%")
-DONE_KW = ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus"]
-ISSUE_KW = ["kendala", "gagal", "error", "reject", "stuck", "belum bisa"]
+# v1.29: skema status disederhanakan jadi 2: open → in_progress → done.
+# - "completed" ditambah sebagai keyword done.
+# - ISSUE_KW (kendala/gagal/error/dst.) dihapus: pesan solver yang berisi kata
+#   tersebut TIDAK lagi mengubah status (tetap tercatat di progress_updates).
+# - Balasan solver PERTAMA pada case open otomatis jadi in_progress (lihat
+#   handle_message) — case yang sudah dibalas dianggap sedang dikerjakan.
+DONE_KW = ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus", "completed"]
 PROG_KW = ["proses", "progress", "diproses", "otw", "dicek", "cek dulu", "follow up", "fu"]
 
 
@@ -484,8 +489,6 @@ def parse_rule(text: str) -> dict:
     low = text.lower()
     if any(k in low for k in DONE_KW):
         out["status"] = "done"
-    elif any(k in low for k in ISSUE_KW):
-        out["status"] = "issue"
     elif any(k in low for k in PROG_KW):
         out["status"] = "in_progress"
     return out
@@ -946,9 +949,9 @@ def _validate_llm_response(data: dict) -> dict | None:
     case_code = data.get("case_code")
     if case_code and not isinstance(case_code, str):
         return None
-    # Normalize: ensure status is valid enum
+    # Normalize: ensure status is valid enum (v1.29: issue dihapus dari skema)
     status = data.get("status")
-    valid_statuses = {"done", "in_progress", "issue", None}
+    valid_statuses = {"done", "in_progress", None}
     if status and status not in valid_statuses:
         status = None
     # Normalize: confidence must be float 0-1
@@ -977,7 +980,7 @@ async def parse_llm(text: str, open_codes: list[str]) -> dict | None:
     prompt = (
         "Kamu parser update progres tiket di grup WhatsApp teknisi Telkom. "
         f"Tiket yang sedang terbuka: {', '.join(open_codes)}. "
-        'Balas HANYA JSON: {"case_code": "INC..."|null, "status": "done|in_progress|issue"|null, '
+        'Balas HANYA JSON: {"case_code": "INC..."|null, "status": "done|in_progress"|null, '
         '"note": "ringkasan singkat"|null, "confidence": 0.0-1.0}. '
         "Kalau pesan bukan update tiket, balas {\"case_code\": null}. "
         f"Pesan: {text}"
@@ -1116,6 +1119,12 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
         log.debug("SKIP: case %s milik grup lain", case.get("case_code"))
         case = None
 
+    # v1.29: balasan solver PERTAMA pada case yang masih open otomatis
+    # mengangkat status ke in_progress — case yang sudah dibalas dianggap
+    # sedang dikerjakan, walau pesannya tidak mengandung keyword status.
+    if case is not None and not parsed.get("status") and case.get("status") == "open":
+        parsed["status"] = "in_progress"
+
     if case is None:
         return False
 
@@ -1202,7 +1211,7 @@ class TestSendIn(CaseIn):
 
 
 class StatusIn(BaseModel):
-    status: str = Field(..., description="Status baru: open, in_progress, done, issue")
+    status: str = Field(..., description="Status baru: open, in_progress, done (v1.29: issue dihapus)")
     note: str | None = Field(None, description="Catatan opsional untuk update status")
 
 

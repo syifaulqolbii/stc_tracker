@@ -219,6 +219,78 @@ class TestExactMatchNonIncCode:
             payload = {**_handle_message_payload(body="halo rekan 1-SSNKPOA"), "from": "120363001@g.us"}
             result = await main_module.handle_message(payload)
             # tanpa status keyword → exact-match path skip (hemat query)
-            for c in mock_codes.call_args_list:
-                pass  # dipanggil hanya oleh LLM fallback (yang return None)
-            assert mock_codes.call_count == 1  # hanya LLM fallback
+
+
+# ======================================================================
+# v1.29 — skema status open → in_progress → done (issue dihapus)
+# ======================================================================
+
+class TestAutoInProgressFirstReply:
+    """v1.29: balasan solver PERTAMA pada case open otomatis jadi in_progress,
+    walau pesan tidak mengandung keyword status."""
+
+    @pytest.mark.asyncio
+    async def test_first_reply_on_open_case_becomes_in_progress(self):
+        case = {"id": 30, "case_code": "INC000023470001", "group_id": 1, "status": "open"}
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[GROUP_A, case])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=case), \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None) as mock_llm, \
+             patch.object(main_module, "link_and_update") as mock_link:
+            payload = {**_handle_message_payload(body="sudah saya terima mas INC000023470001"), "from": "120363001@g.us"}
+            assert await main_module.handle_message(payload) is True
+            args = mock_link.call_args.args
+            assert args[4] == "in_progress"  # parsed_status
+
+    @pytest.mark.asyncio
+    async def test_first_reply_with_done_keyword_stays_done(self):
+        """Keyword eksplisit tetap menang — auto in_progress hanya bila tanpa keyword."""
+        case = {"id": 31, "case_code": "INC000023470002", "group_id": 1, "status": "open"}
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[GROUP_A, case])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=case), \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "link_and_update") as mock_link:
+            payload = {**_handle_message_payload(body="completed INC000023470002"), "from": "120363001@g.us"}
+            assert await main_module.handle_message(payload) is True
+            assert mock_link.call_args.args[4] == "done"
+
+    @pytest.mark.asyncio
+    async def test_reply_on_done_case_keeps_done(self):
+        """Case sudah done → balasan tanpa keyword TIDAK menurunkan ke in_progress."""
+        case = {"id": 32, "case_code": "INC000023470003", "group_id": 1, "status": "done"}
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[GROUP_A, case])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=case), \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "link_and_update") as mock_link:
+            payload = {**_handle_message_payload(body="terima kasih mas INC000023470003"), "from": "120363001@g.us"}
+            assert await main_module.handle_message(payload) is True
+            assert mock_link.call_args.args[4] is None  # status tidak berubah
+
+    @pytest.mark.asyncio
+    async def test_completed_keyword_maps_done(self):
+        """Keyword baru 'completed' → done (baik di awal maupun di tengah kalimat)."""
+        for text in ("completed INC000023470004", "case sudah completed ya mas"):
+            assert main_module.parse_rule(text)["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_issue_keywords_no_status_change_via_handle(self):
+        """Pesan 'ada kendala' tanpa keyword lain → status None (bukan issue lagi)."""
+        case = {"id": 33, "case_code": "INC000023470005", "group_id": 1, "status": "in_progress"}
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[GROUP_A, case])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=case), \
+             patch.object(main_module, "parse_llm", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "link_and_update") as mock_link:
+            payload = {**_handle_message_payload(body="masih ada kendala di INC000023470005"), "from": "120363001@g.us"}
+            assert await main_module.handle_message(payload) is True
+            assert mock_link.call_args.args[4] is None

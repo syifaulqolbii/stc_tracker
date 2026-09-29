@@ -1723,6 +1723,16 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.29 (29 September 2026) — skema status disederhanakan: open → in_progress → done
+Perubahan perilaku parsing status dari balasan WA (tanpa endpoint/param/response baru, **filter `status=issue` di list/export masih berfungsi** untuk data historis):
+
+- **Keyword `completed` ditambahkan** untuk status done (mis. balasan `completed INC000012345678` → case jadi done). Keyword done lain tidak berubah.
+- **Keyword issue dihapus** — pesan berisi `kendala / gagal / error / reject / stuck / belum bisa` TIDAK lagi mengubah status ke issue (pesan tetap tercatat di progress_updates & timeline).
+- **Balasan solver pertama pada case `open` otomatis jadi `in_progress`** — case yang sudah dibalas dianggap sedang dikerjakan, walau pesan tidak mengandung keyword status. Keyword eksplisit (done) tetap menang; case non-open tidak terpengaruh.
+- Koreksi status manual via `POST /api/cases/{id}/status` kini hanya menerima `open | in_progress | done`.
+
+Implikasi FE: tidak wajib berubah, tapi sebaiknya pilihan status di UI hanya menampilkan 3 status di atas; case lama berstatus `issue` tetap tampil sampai di-update.
+
 ### v1.28 (27 September 2026) — notif "Update Case" ke grup test ikut kirim media
 Perubahan perilaku notifikasi balasan solver ke grup default/test (v1.23) — **tidak ada endpoint/param/response baru, FE tidak perlu perubahan apa pun**. Sebelumnya notif `💬 Update Case` hanya mengirim teks walau balasan solver bermmedia; sekarang media pesan solver IKUT dikirim ke grup test sebagai `sendImage` (image) atau `sendFile` (video/PDF) dengan **teks notif sebagai caption** (satu pesan, anti double-send — pola sama dengan v1.27). Media diambil dari file yang sudah tersimpan di server (hasil download otomatis dari WA), dikirim base64 (pola sama dengan v1.26). Fallback aman: bila file media tidak ditemukan / WAHA gagal kirim media, notif tetap terkirim sebagai teks polos (fire-and-forget, tidak pernah menggagalkan update case).
 

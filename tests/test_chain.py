@@ -166,14 +166,17 @@ class TestParseRule:
         assert result.get("progress") == 75
 
     def test_done_keywords(self):
-        for kw in ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus"]:
+        for kw in ["done", "selesai", "beres", "kelar", "solved", "closed", "terkirim", "lurus", "completed"]:
             result = main_module.parse_rule(f"case {kw}")
             assert result["status"] == "done", f"Keyword '{kw}' should map to done"
 
-    def test_issue_keywords(self):
+    def test_issue_keywords_no_longer_change_status(self):
+        """v1.29: keyword issue dihapus — pesan berisi kata kendala/gagal/error
+        dll TIDAK lagi mengubah status (bisa jadi in_progress kalau ada keyword
+        progres di pesan yang sama, karena issue tak lagi punya prioritas)."""
         for kw in ["kendala", "gagal", "error", "reject", "stuck", "belum bisa"]:
             result = main_module.parse_rule(f"case {kw}")
-            assert result["status"] == "issue", f"Keyword '{kw}' should map to issue"
+            assert "status" not in result, f"Keyword '{kw}' should NOT change status anymore"
 
     def test_in_progress_keywords(self):
         for kw in ["proses", "progress", "diproses", "otw", "dicek", "cek dulu", "follow up", "fu"]:
@@ -189,14 +192,14 @@ class TestParseRule:
         assert result == {}
 
     def test_priority_done_over_issue(self):
-        """done keyword takes priority over issue."""
+        """done keyword takes priority (pesan campuran tetap done)."""
         result = main_module.parse_rule("done ada kendala juga")
         assert result["status"] == "done"
 
-    def test_priority_issue_over_progress(self):
-        """issue keyword takes priority over in_progress."""
+    def test_issue_word_with_progress_keyword_maps_in_progress(self):
+        """v1.29: 'gagal sedang proses' → in_progress (bukan issue lagi)."""
         result = main_module.parse_rule("gagal sedang proses")
-        assert result["status"] == "issue"
+        assert result["status"] == "in_progress"
 
     def test_percentage_cap_at_100(self):
         result = main_module.parse_rule("INC000023470570 150%")
