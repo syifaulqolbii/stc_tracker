@@ -29,6 +29,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from urllib.parse import urlparse, urlunparse, quote
 
 import httpx
@@ -1211,7 +1212,8 @@ class TestSendIn(CaseIn):
 
 
 class StatusIn(BaseModel):
-    status: str = Field(..., description="Status baru: open, in_progress, done (v1.29: issue dihapus)")
+    # v1.29: Literal — issue tidak lagi valid (data historis tetap tampil)
+    status: Literal["open", "in_progress", "done"] = Field(..., description="Status baru: open, in_progress, done (v1.29: issue dihapus)")
     note: str | None = Field(None, description="Catatan opsional untuk update status")
 
 

@@ -2533,6 +2533,27 @@ class TestCaseListPagination:
 
 # ===================== Export Excel (v1.21) =====================
 
+class TestSetStatusV129:
+    """v1.29: POST /api/cases/{id}/status hanya menerima open/in_progress/done."""
+
+    def test_issue_rejected(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            resp = tc.post("/api/cases/1/status", json={"status": "issue"})
+            assert resp.status_code == 422
+
+    def test_done_accepted(self):
+        mock_conn, mock_cursor = _make_mock_db(fetchone_sequence=[{"id": 1}])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", ""):
+            tc = TestClient(main_module.app)
+            resp = tc.post("/api/cases/1/status", json={"status": "done"})
+            assert resp.status_code == 200
+            assert resp.json() == {"ok": True}
+
+
 class TestCaseExport:
     """GET /api/cases/export.xlsx — download xlsx dengan filter identik list."""
 
