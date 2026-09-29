@@ -191,6 +191,127 @@ class TestCaseReplyNotification:
             assert "Dibalas oleh Furqon Nugroho:" in text
 
 
+# ============ Notifikasi bersmedia ke grup test (v1.28) ============
+
+class TestCaseReplyNotificationMedia:
+    """v1.28: balasan solver yang bermmedia → media ikut dikirim ke grup
+    notif (sendImage/sendFile), teks notif jadi caption (anti double-send)."""
+
+    IMG_TYPE = "image/jpeg"
+    PDF_TYPE = "application/pdf"
+
+    @pytest.fixture
+    def media_file(self, tmp_path):
+        """File media palsu di MEDIA_DIR (simulasi hasil _download_media)."""
+        p = tmp_path / "abc123.jpg"
+        p.write_bytes(b"\xff\xd8\xff\xe0fakejpeg")
+        return str(p)
+
+    def _media_payload(self, media_url, media_type=IMG_TYPE):
+        p = _payload()
+        p["hasMedia"] = True
+        p["media"] = {"url": media_url or "http://waha:3000/api/files/abc.jpg",
+                      "mimetype": media_type}
+        return p
+
+    @pytest.mark.asyncio
+    async def test_image_replied_to_test_group_as_caption(self, media_file):
+        """Balasan + image → HANYA sendImage (caption = teks notif), tanpa sendText."""
+        mock_conn, _ = _make_mock_db(fetchone_sequence=[GROUP_A, DEFAULT_GROUP])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=NOTIF_CASE), \
+             patch.object(main_module, "link_and_update"), \
+             patch.object(main_module, "MEDIA_DIR", os.path.dirname(media_file)), \
+             patch.object(main_module, "waha_send", new_callable=AsyncMock) as mock_send, \
+             patch.object(main_module, "waha_send_media", new_callable=AsyncMock) as mock_media:
+            # media_url hasil _download_and_rewrite_media = URL publik berisi nama file
+            await main_module.handle_message(
+                self._media_payload(f"http://x/api/media/file/{os.path.basename(media_file)}"))
+            mock_send.assert_not_awaited()  # anti double-send
+            mock_media.assert_awaited_once()
+            endpoint, payload = mock_media.call_args[0]
+            assert endpoint == "sendImage"
+            assert payload["chatId"] == DEFAULT_GROUP["chat_id"]
+            assert payload["file"]["mimetype"] == self.IMG_TYPE
+            assert payload["file"]["data"]  # base64 terisi
+            assert f"Ticket Remedy : {INC_CODE}" in payload["caption"]
+
+    @pytest.mark.asyncio
+    async def test_pdf_replied_uses_sendfile(self, media_file):
+        """Media non-image → sendFile, caption tetap teks notif."""
+        pdf = media_file.replace(".jpg", ".pdf")
+        with open(pdf, "wb") as f:
+            f.write(b"%PDF-1.4 fake")
+        mock_conn, _ = _make_mock_db(fetchone_sequence=[GROUP_A, DEFAULT_GROUP])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=NOTIF_CASE), \
+             patch.object(main_module, "link_and_update"), \
+             patch.object(main_module, "MEDIA_DIR", os.path.dirname(pdf)), \
+             patch.object(main_module, "waha_send", new_callable=AsyncMock) as mock_send, \
+             patch.object(main_module, "waha_send_media", new_callable=AsyncMock) as mock_media:
+            await main_module.handle_message(
+                self._media_payload(f"http://x/api/media/file/{os.path.basename(pdf)}",
+                                    media_type=self.PDF_TYPE))
+            mock_send.assert_not_awaited()
+            endpoint, payload = mock_media.call_args[0]
+            assert endpoint == "sendFile"
+            assert payload["file"]["mimetype"] == self.PDF_TYPE
+
+    @pytest.mark.asyncio
+    async def test_media_missing_falls_back_to_text(self, media_file):
+        """File media hilang dari MEDIA_DIR → fallback kirim teks polos."""
+        mock_conn, _ = _make_mock_db(fetchone_sequence=[GROUP_A, DEFAULT_GROUP])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=NOTIF_CASE), \
+             patch.object(main_module, "link_and_update"), \
+             patch.object(main_module, "MEDIA_DIR", os.path.dirname(media_file)), \
+             patch.object(main_module, "waha_send", new_callable=AsyncMock) as mock_send, \
+             patch.object(main_module, "waha_send_media", new_callable=AsyncMock) as mock_media:
+            await main_module.handle_message(
+                self._media_payload("http://x/api/media/file/tidak-ada-999.jpg"))
+            mock_media.assert_not_awaited()
+            mock_send.assert_awaited_once()  # fallback teks
+
+    @pytest.mark.asyncio
+    async def test_media_send_failure_falls_back_to_text(self, media_file):
+        """sendImage error → tetap kirim teks (notif fire-and-forget, tidak raise)."""
+        mock_conn, _ = _make_mock_db(fetchone_sequence=[GROUP_A, DEFAULT_GROUP])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=NOTIF_CASE), \
+             patch.object(main_module, "link_and_update"), \
+             patch.object(main_module, "MEDIA_DIR", os.path.dirname(media_file)), \
+             patch.object(main_module, "waha_send", new_callable=AsyncMock) as mock_send, \
+             patch.object(main_module, "waha_send_media", new_callable=AsyncMock,
+                          side_effect=RuntimeError("waha down")) as mock_media:
+            await main_module.handle_message(
+                self._media_payload(f"http://x/api/media/file/{os.path.basename(media_file)}"))
+            mock_media.assert_awaited_once()
+            mock_send.assert_awaited_once()  # fallback teks tetap jalan
+
+    @pytest.mark.asyncio
+    async def test_no_media_still_sends_text_only(self):
+        """Tanpa media → perilaku lama: sendText saja (regresi guard)."""
+        mock_conn, _ = _make_mock_db(fetchone_sequence=[GROUP_A, DEFAULT_GROUP])
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "find_case_by_code", return_value=NOTIF_CASE), \
+             patch.object(main_module, "link_and_update"), \
+             patch.object(main_module, "waha_send", new_callable=AsyncMock) as mock_send, \
+             patch.object(main_module, "waha_send_media", new_callable=AsyncMock) as mock_media:
+            await main_module.handle_message(_payload())
+            mock_media.assert_not_awaited()
+            mock_send.assert_awaited_once()
+
+
 
 # ============ Test bump updated_at tiap balasan solver (v1.25) ============
 

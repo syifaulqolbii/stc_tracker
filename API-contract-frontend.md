@@ -1723,6 +1723,9 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.28 (27 September 2026) — notif "Update Case" ke grup test ikut kirim media
+Perubahan perilaku notifikasi balasan solver ke grup default/test (v1.23) — **tidak ada endpoint/param/response baru, FE tidak perlu perubahan apa pun**. Sebelumnya notif `💬 Update Case` hanya mengirim teks walau balasan solver bermmedia; sekarang media pesan solver IKUT dikirim ke grup test sebagai `sendImage` (image) atau `sendFile` (video/PDF) dengan **teks notif sebagai caption** (satu pesan, anti double-send — pola sama dengan v1.27). Media diambil dari file yang sudah tersimpan di server (hasil download otomatis dari WA), dikirim base64 (pola sama dengan v1.26). Fallback aman: bila file media tidak ditemukan / WAHA gagal kirim media, notif tetap terkirim sebagai teks polos (fire-and-forget, tidak pernah menggagalkan update case).
+
 ### v1.27 (25 September 2026) — anti double-send: teks + attachment = 1 pesan WA
 Perbaikan perilaku `POST /api/cases/{id}/replies` (tanpa perubahan request/response): bila request berisi `message` **dan** `attachments`, teks TIDAK lagi dikirim sebagai pesan `sendText` terpisah — ia hanya menjadi **caption** media. Sebelumnya grup menerima 2 pesan isinya sama (teks, lalu gambar/PDF ber-caption teks yang sama). Aturan baru:
 

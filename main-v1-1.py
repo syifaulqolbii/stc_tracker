@@ -196,7 +196,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.27.0",
+    version="1.28.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -658,13 +658,20 @@ NOTIF_BODY_MAX = 300  # batas panjang kutipan balasan di pesan notif
 
 async def notify_case_reply(case: dict, group_chat_id: str | None,
                             author_name: str | None, body: str,
-                            parsed_status: str | None) -> None:
+                            parsed_status: str | None,
+                            media_filename: str | None = None,
+                            media_type: str | None = None) -> None:
     """Kirim notifikasi ke grup default (test) setiap ada balasan solver yang
     ter-link ke case. Fire-and-forget: kegagalan WAHA/DB tidak boleh
     menggagalkan update case itu sendiri.
 
     Identifier menampilkan semua yang ada: Ticket Remedy dan/atau Case ID,
     ditambah (IH <no_indihome>) kalau ada. Tanpa keduanya → fallback case_code.
+
+    v1.28: bila pesan solver bermmedia, media IKUT dikirim ke grup notif
+    (sendImage/sendFile dengan file.data base64 — pola sama dengan v1.26) dan
+    teks notif jadi caption (anti double-send, pola v1.27). Media diambil dari
+    file yang sudah di-download ke MEDIA_DIR oleh handle_message.
     """
     try:
         if not isinstance(case, dict):
@@ -708,8 +715,39 @@ async def notify_case_reply(case: dict, group_chat_id: str | None,
         if parsed_status:
             lines.append(f"Status: {parsed_status}")
 
-        await waha_send("\n".join(lines), chat_id=notif_group["chat_id"])
-        log.info("NOTIF case %s -> grup test (%s)", case.get("case_code"), notif_group["chat_id"])
+        notif_text = "\n".join(lines)
+        chat_id = notif_group["chat_id"]
+
+        # v1.28: pesan solver bermmedia → media ikut ke grup notif, teks jadi
+        # caption (anti double-send). Gagal baca/kirim media → fallback kirim
+        # teks polos, karena notif ini fire-and-forget (tidak boleh raise).
+        media_ok = False
+        if media_filename and media_type:
+            try:
+                filepath = os.path.join(MEDIA_DIR, os.path.basename(media_filename))
+                # Bisa berupa filename polos dari _download_media ATAU URL publik
+                if not os.path.exists(filepath):
+                    filepath = os.path.join(MEDIA_DIR,
+                                            os.path.basename(urlparse(media_filename).path))
+                if os.path.exists(filepath):
+                    with open(filepath, "rb") as fh:
+                        b64 = base64.b64encode(fh.read()).decode()
+                    endpoint = "sendImage" if media_type.lower().startswith("image/") else "sendFile"
+                    await waha_send_media(endpoint, {
+                        "session": WAHA_SESSION, "chatId": chat_id,
+                        "file": {"mimetype": media_type, "data": b64},
+                        "caption": notif_text,
+                    })
+                    media_ok = True
+                    log.info("NOTIF case %s -> grup test (%s) + media %s",
+                             case.get("case_code"), chat_id, os.path.basename(filepath))
+                else:
+                    log.warning("NOTIF media tidak ditemukan di MEDIA_DIR: %s", media_filename)
+            except Exception as me:
+                log.warning("NOTIF kirim media gagal (fallback ke teks): %s", me)
+        if not media_ok:
+            await waha_send(notif_text, chat_id=chat_id)
+        log.info("NOTIF case %s -> grup test (%s)", case.get("case_code"), chat_id)
     except Exception as e:
         log.error("notify_case_reply gagal (non-fatal): %s", e)
 
@@ -1088,8 +1126,10 @@ async def handle_message(p: dict, crawl: bool = False) -> bool:
     link_and_update(case["id"], wa_mid, author, body_display,
                     parsed.get("status"), parsed.get("note") or body_display[:200], source, conf)
     # Notifikasi balasan solver → grup default/test (v1.23). Fire-and-forget.
+    # v1.28: media pesan solver ikut dikirim ke grup notif (teks jadi caption).
     await notify_case_reply(case, group["chat_id"], author_name,
-                            body_display, parsed.get("status"))
+                            body_display, parsed.get("status"),
+                            media_filename=media_url, media_type=media_type)
     log.info("UPDATE %s <- %s (%s): %s", case["case_code"], author, source, parsed.get("status"))
     return True
 
