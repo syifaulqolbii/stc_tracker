@@ -1726,6 +1726,39 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.32 (5 Oktober 2026) — metrik response time solver
+Endpoint baru **`GET /api/metrics/solver-response`** (tag: System) — response time solver: waktu case dikirim ke grup (`cases.created_at`) → balasan **pertama** dari solver (`wa_messages.from_me=false`, status diabaikan, semua case open/in_progress/done ikut dihitung).
+
+**Query params (semua opsional, digabung AND):**
+
+| Param | Tipe | Deskripsi |
+|---|---|---|
+| `regional_id` | int | Hanya case di regional itu |
+| `solver` | string | Substring nama solver, case-insensitive — `smops` cocok `IT - SMOPS` |
+| `group_id` | int | Hanya case di grup WA itu |
+| `date_from` | YYYY-MM-DD | Filter `created_at` mulai (inklusif) |
+| `date_to` | YYYY-MM-DD | Filter `created_at` sampai (inklusif) |
+
+Format tanggal salah / `date_from` > `date_to` → `422`.
+
+**Response:** `{filters, summary, distribution, per_solver, unanswered, cases}`
+
+- `summary`: `{total_cases, avg_menit, min_menit, max_menit, median_menit}` (null bila kosong)
+- `distribution`: bucket `lt_5` (<5 mnt), `b_5_15`, `b_15_60`, `gt_60` — masing-masing `{bucket, jumlah_case, persen}`
+- `per_solver`: `{solver, jumlah_case, avg_menit, min_menit, max_menit, median_menit}` — **sort by median ascending**
+- `unanswered`: `{count, cases[]}` — case tanpa balasan solver sama sekali (watchlist)
+- `cases[]`: detail per case — `{id, case_code, status, group_name, regional_name, kirim_case_at, solver, balasan_pertama_at, response_menit}`
+
+**Contoh:**
+```bash
+# semua case
+GET /api/metrics/solver-response
+# regional Jateng DIY, solver SMOPS, minggu ini
+GET /api/metrics/solver-response?regional_id=7&solver=smops&date_from=2026-09-29&date_to=2026-10-05
+```
+
+**Catatan interpretasi:** pakai `median_menit` untuk menilai kinerja — `avg_menit` bisa terseret outlier balasan historis yang masuk via `/api/crawl` (timestamp = waktu crawl, bukan waktu asli pesan WA).
+
 ### v1.31 (29 September 2026) — jenis case baru: AO
 Penambahan jenis case **AO** (Activation Order / pasang baru) di samping Non Order, Non AO, dan Mobile:
 

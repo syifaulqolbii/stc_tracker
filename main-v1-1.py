@@ -197,7 +197,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.31.0",
+    version="1.32.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -2180,6 +2180,216 @@ def list_case_reminders(
             (case_id,),
         )
         return cur.fetchall()
+
+
+# ---------------------------------------------------------------- Solver Response Metrics (v1.32)
+
+def _solver_response_metrics(
+    cur, regional_id, solver, group_id,
+    date_from=None, date_to=None,
+):
+    """Hitung response time solver: kirim case (cases.created_at) -> balasan
+    pertama solver (wa_messages.from_me=false, apapun statusnya).
+
+    Semua filter opsional, digabung AND:
+    - regional_id : hanya case di regional itu
+    - solver      : COALESCE(author_name, author) ILIKE %solver% (substring,
+                    case-insensitive — 'smops' cocok 'IT - SMOPS')
+    - group_id    : hanya case di grup WA itu
+    - date_from/date_to : filter created_at case (inklusif, YYYY-MM-DD)
+
+    Return: (rows_detail, rows_pending) — list[dict].
+    Latency dihitung di DB; agregat (avg/median/distribusi/per-solver) dihitung
+    di Python supaya median per solver akurat dan mudah dites.
+    """
+    if date_from:
+        try:
+            date_from = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_from harus format YYYY-MM-DD (contoh: 2026-09-01)")
+    if date_to:
+        try:
+            date_to = datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_to harus format YYYY-MM-DD (contoh: 2026-10-05)")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from tidak boleh setelah date_to")
+
+    base_join = """FROM cases c
+                    JOIN first_reply fr ON fr.case_id = c.id
+                    LEFT JOIN wa_groups g ON g.id = c.group_id
+                    LEFT JOIN regionals r ON c.regional_id = r.id
+                    WHERE c.deleted_at IS NULL
+                      AND fr.first_reply_at >= c.created_at"""
+    conds, args = [], []
+    if regional_id:
+        conds.append("c.regional_id = %s")
+        args.append(regional_id)
+    if solver:
+        conds.append("COALESCE(fr.author_name, fr.author) ILIKE %s")
+        args.append(f"%{solver}%")
+    if group_id:
+        conds.append("c.group_id = %s")
+        args.append(group_id)
+    if date_from:
+        conds.append("c.created_at >= %s")
+        args.append(date_from)
+    if date_to:
+        conds.append("c.created_at < %s")   # +1 hari: date_to inklusif
+        args.append(date_to + timedelta(days=1))
+    where_extra = (" AND " + " AND ".join(conds)) if conds else ""
+
+    # 1) Detail per case yang sudah dibalas
+    cur.execute(
+        f"""WITH first_reply AS (
+                SELECT DISTINCT ON (case_id)
+                       case_id, author, author_name, created_at AS first_reply_at
+                FROM wa_messages
+                WHERE from_me = false AND case_id IS NOT NULL
+                ORDER BY case_id, created_at
+            )
+            SELECT c.id, c.case_code, c.status, g.name AS group_name,
+                   r.name AS regional_name,
+                   c.created_at AS kirim_case_at,
+                   COALESCE(fr.author_name, fr.author) AS solver,
+                   fr.first_reply_at AS balasan_pertama_at,
+                   EXTRACT(EPOCH FROM (fr.first_reply_at - c.created_at)) / 60.0
+                       AS response_menit
+            {base_join}{where_extra}
+            ORDER BY c.created_at ASC""",
+        args,
+    )
+    rows = [
+        dict(r) for r in cur.fetchall()
+    ]
+
+    # 2) Case belum dibalas (tanpa balasan solver sama sekali) — watchlist
+    pend_conds = ["c.deleted_at IS NULL",
+                  "NOT EXISTS (SELECT 1 FROM wa_messages w WHERE w.case_id = c.id AND w.from_me = false)"]
+    pend_args: list = []
+    if regional_id:
+        pend_conds.append("c.regional_id = %s")
+        pend_args.append(regional_id)
+    if solver:
+        # solver filter tidak relevan untuk case tanpa balasan — skip
+        pass
+    if group_id:
+        pend_conds.append("c.group_id = %s")
+        pend_args.append(group_id)
+    if date_from:
+        pend_conds.append("c.created_at >= %s")
+        pend_args.append(date_from)
+    if date_to:
+        pend_conds.append("c.created_at < %s")
+        pend_args.append(date_to + timedelta(days=1))
+    cur.execute(
+        f"""SELECT c.id, c.case_code, c.status, g.name AS group_name,
+                   r.name AS regional_name, c.created_at,
+                   EXTRACT(EPOCH FROM (now() - c.created_at)) / 60.0
+                       AS menit_sejak_kirim
+            FROM cases c
+            LEFT JOIN wa_groups g ON g.id = c.group_id
+            LEFT JOIN regionals r ON c.regional_id = r.id
+            WHERE {' AND '.join(pend_conds)}
+            ORDER BY c.created_at ASC""",
+        pend_args,
+    )
+    pending = [dict(r) for r in cur.fetchall()]
+    return rows, pending
+
+
+def _summarize_response_rows(rows: list[dict], pending: list[dict]) -> dict:
+    """Agregat dari detail rows (pure Python, mudah dites): summary + bucket + per-solver."""
+    import statistics as _stats
+    lats = [r["response_menit"] for r in rows]
+    lats_f = [float(v) for v in lats]
+    if lats_f:
+        summary = {
+            "total_cases": len(lats_f),
+            "avg_menit": round(sum(lats_f) / len(lats_f), 2),
+            "min_menit": round(min(lats_f), 2),
+            "max_menit": round(max(lats_f), 2),
+            "median_menit": round(float(_stats.median(lats_f)), 2),
+        }
+        buckets = {"lt_5": 0, "b_5_15": 0, "b_15_60": 0, "gt_60": 0}
+        for v in lats_f:
+            if v < 5:
+                buckets["lt_5"] += 1
+            elif v < 15:
+                buckets["b_5_15"] += 1
+            elif v < 60:
+                buckets["b_15_60"] += 1
+            else:
+                buckets["gt_60"] += 1
+        n = len(lats_f)
+        distribution = [
+            {"bucket": k, "jumlah_case": v, "persen": round(100.0 * v / n, 1)}
+            for k, v in buckets.items()
+        ]
+    else:
+        summary = {"total_cases": 0, "avg_menit": None, "min_menit": None,
+                   "max_menit": None, "median_menit": None}
+        distribution = []
+
+    per_solver: dict[str, list[float]] = {}
+    for r in rows:
+        per_solver.setdefault(r["solver"] or "unknown", []).append(float(r["response_menit"]))
+    solvers = []
+    for name, vals in per_solver.items():
+        solvers.append({
+            "solver": name,
+            "jumlah_case": len(vals),
+            "avg_menit": round(sum(vals) / len(vals), 2),
+            "min_menit": round(min(vals), 2),
+            "max_menit": round(max(vals), 2),
+            "median_menit": round(float(_stats.median(vals)), 2),
+        })
+    solvers.sort(key=lambda s: s["median_menit"])
+
+    return {
+        "summary": summary,
+        "distribution": distribution,
+        "per_solver": solvers,
+        "unanswered": {
+            "count": len(pending),
+            "cases": pending,
+        },
+    }
+
+
+@app.get("/api/metrics/solver-response", tags=["System"],
+         summary="Metrik response time solver",
+         description=("Hitung response time solver: waktu case dikirim ke grup (cases.created_at) "
+                      "sampai balasan PERTAMA dari solver (wa_messages.from_me=false, status diabaikan). "
+                      "Semua case ikut dihitung (open/in_progress/done). Filter opsional digabung AND: "
+                      "regional_id, solver (substring nama, case-insensitive), group_id, date_from/date_to "
+                      "(inklusif, YYYY-MM-DD). Return: summary (avg/median/min/max), distribusi bucket, "
+                      "per-solver (dengan median), detail per case, dan watchlist case yang belum dibalas."))
+def solver_response_metrics(
+    request: Request,
+    regional_id: int | None = Query(None, description="Filter Regional ID. Lihat GET /api/areas/{area_id}/regionals"),
+    solver: str | None = Query(None, description="Filter nama solver (substring, case-insensitive). Contoh: smops"),
+    group_id: int | None = Query(None, description="Filter grup WA"),
+    date_from: str | None = Query(None, description="Filter created_at mulai tanggal ini (inklusif, YYYY-MM-DD)"),
+    date_to: str | None = Query(None, description="Filter created_at sampai tanggal ini (inklusif, YYYY-MM-DD)"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        rows, pending = _solver_response_metrics(
+            cur, regional_id=regional_id, solver=solver, group_id=group_id,
+            date_from=date_from, date_to=date_to,
+        )
+    return {
+        "filters": {
+            "regional_id": regional_id, "solver": solver,
+            "group_id": group_id, "date_from": date_from, "date_to": date_to,
+        },
+        **_summarize_response_rows(rows, pending),
+        "cases": rows,
+    }
 
 
 # ---------------------------------------------------------------- Webhooks
