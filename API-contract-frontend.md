@@ -1713,15 +1713,25 @@ https://imgur.com/app_error
 |---|---|---|---|---|
 | STC | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
 | STC | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
+| STC | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
 | STC | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 | Grapari | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ✅ Wajib input |
 | Grapari | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
 | Grapari | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ✅ Wajib input |
 | Web IT | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
 | Web IT | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
+| Web IT | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 12. Changelog
+
+### v1.31 (29 September 2026) — jenis case baru: AO
+Penambahan jenis case **AO** (Activation Order / pasang baru) di samping Non Order, Non AO, dan Mobile:
+
+- **Backend**: `templates.py` kini punya template AO — format field identik dengan Non AO (Ticket Remedy, Case ID, Order ID, Nomer Indihome, Last Milestone, Request Case, Detail Case, Link Evidence), label header pesan WA `#..._AO_...`. Nama jenis di-resolve case-insensitive (`AO`/`Ao`/`ao` semuanya valid).
+- **Wajib di DB**: tambahkan row `INSERT INTO jenis_cases (name) VALUES ('AO') ON CONFLICT DO NOTHING;` di VPS setelah deploy — tanpa ini, `POST /api/cases` dengan jenis AO gagal resolve ID (422).
+- **FE**: dropdown jenis case dari `GET /api/jenis-cases` otomatis menampilkan AO. Field/required sama dengan Non AO. Placeholder textarea FE (jika di-hardcode) bisa ditambahkan opsional.
 
 ### v1.30 (29 September 2026) — fix false-positive keyword status (word boundary + guard negasi)
 Perbaikan parsing status dari balasan WA — **tanpa perubahan endpoint/response**. Kasus nyata: case INC000024263663 salah berubah jadi `done` karena pesan *"...sudah diluruskan sesuai dengan UFO..."* — substring `lurus` match di dalam kata `diluruskan`. Perbaikan:

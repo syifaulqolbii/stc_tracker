@@ -197,7 +197,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.30.0",
+    version="1.31.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1189,7 +1189,7 @@ class CaseIn(BaseModel):
     area_id: int | None = Field(None, description="ID Area. Lihat GET /api/areas")
     regional_id: int | None = Field(None, description="ID Regional (tergantung Area). Lihat GET /api/areas/{area_id}/regionals")
     sumber_ticket: str | None = Field(None, description="Sumber Ticket: STC, Grapari, atau Web IT. Lihat GET /api/sumber-tickets")
-    jenis_case: str | None = Field(None, description="Jenis Case: Non Order, Non AO, atau Mobile. Lihat GET /api/jenis-cases")
+    jenis_case: str | None = Field(None, description="Jenis Case: Non Order, Non AO, AO, atau Mobile. Lihat GET /api/jenis-cases")
     asal_grapari: str | None = Field(None, description="Asal GraPARI (hanya jika Sumber Ticket = Grapari). Free text.")
     mentions: list[Mention] = Field([], description="Daftar kontak solver yang akan di-mention di grup WA")
     custom_header: str | None = Field(None, description="Custom header pesan. Kosongkan untuk default.")
@@ -1592,7 +1592,7 @@ def _dt_fmt(v):
 def export_cases_xlsx(
     request: Request,
     status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
-    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, AO, Mobile"),
     area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
     regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
     sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
@@ -1681,7 +1681,7 @@ def _coerce_cell(v):
 def list_cases(
     request: Request,
     status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
-    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, Mobile"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, AO, Mobile"),
     area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
     regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
     sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
@@ -1851,7 +1851,7 @@ def list_sumber_tickets(
 
 @app.get("/api/jenis-cases", tags=["Lookup"],
          summary="Daftar Jenis Case",
-         description="Return list jenis case: Non Order, Non AO, Mobile.")
+         description="Return list jenis case dari DB: Non Order, Non AO, AO, Mobile.")
 def list_jenis_cases(
     request: Request,
     _auth: str = Depends(verify_api_key),

@@ -4,13 +4,14 @@ Each jenis_case has a specific layout of fields that get rendered
 into a WhatsApp-friendly text format.
 """
 
-# New case types (v1.2)
-CASE_TYPES = ["non_order", "non_ao", "mobile"]
+# New case types (v1.2); "ao" ditambah v1.31 (Activation Order, pasang baru)
+CASE_TYPES = ["non_order", "non_ao", "ao", "mobile"]
 
 # Required fields per jenis_case (validated in backend)
 REQUIRED_FIELDS: dict[str, set[str]] = {
     "non_order": {"ticket_remedy", "no_indihome"},
     "non_ao": {"ticket_remedy", "order_id", "no_indihome"},
+    "ao": {"ticket_remedy", "order_id", "no_indihome"},
     "mobile": {"ticket_remedy", "msisdn"},
 }
 
@@ -25,6 +26,18 @@ CASE_FIELDS: dict[str, list[tuple[str, str]]] = {
         ("link_evidence", "Link Evidence"),
     ],
     "non_ao": [
+        ("ticket_remedy", "Ticket Remedy"),
+        ("case_id", "Case ID"),
+        ("order_id", "Order ID"),
+        ("no_indihome", "Nomer Indihome"),
+        ("last_milestone", "Last Milestone"),
+        ("request_case", "Request Case"),
+        ("detail_case", "Detail Case"),
+        ("link_evidence", "Link Evidence"),
+    ],
+    # v1.31: AO (Activation Order/pasang baru) — format sama dengan Non AO,
+    # yang membedakan hanya jenis ordernya.
+    "ao": [
         ("ticket_remedy", "Ticket Remedy"),
         ("case_id", "Case ID"),
         ("order_id", "Order ID"),
@@ -56,6 +69,7 @@ LEGACY_CASE_TYPE_MAP = {
 TYPE_LABELS = {
     "non_order": "Non Order",
     "non_ao": "Non AO",
+    "ao": "AO",
     "mobile": "Mobile",
 }
 
@@ -83,6 +97,23 @@ Regional : <nama regional>
 Sumber Ticket : <STC/Grapari/Web IT>
 Asal Grapari : <nama GraPARI> (jika sumber Grapari)
 Jenis Case : Non AO
+
+Ticket Remedy : INC000000000000
+Order ID : <order id>
+Nomer Indihome : 0211234567
+Last Milestone : <last milestone>
+Request Case : <request case>
+Detail Case : <detail case>
+Link Evidence :
+<link1>
+<link2>""",
+    "ao": """punten rekan @<nomor> mohon bantuannya untuk case AO ada 1 case lagi
+
+Area : <nama area>
+Regional : <nama regional>
+Sumber Ticket : <STC/Grapari/Web IT>
+Asal Grapari : <nama GraPARI> (jika sumber Grapari)
+Jenis Case : AO
 
 Ticket Remedy : INC000000000000
 Order ID : <order id>

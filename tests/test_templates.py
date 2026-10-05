@@ -10,6 +10,7 @@ from templates import CASE_TYPES, render_case_text, render_header, CASE_FIELDS, 
 def test_case_types_list():
     assert "non_order" in CASE_TYPES
     assert "non_ao" in CASE_TYPES
+    assert "ao" in CASE_TYPES
     assert "mobile" in CASE_TYPES
     # Old types should NOT be in CASE_TYPES
     assert "stc" not in CASE_TYPES
@@ -211,6 +212,31 @@ def test_render_case_text_non_ao():
     assert "MSISDN" not in result
 
 
+def test_render_case_text_ao():
+    """AO (v1.31): format identik Non AO, label header 'AO'."""
+    fields = {
+        "ticket_remedy": "INC888",
+        "order_id": "ORD-AO-001",
+        "no_indihome": "0211112222",
+        "last_milestone": "TSEL ACTIVATION FALLOUT",
+        "request_case": "Aktivasi baru",
+        "detail_case": "AO test",
+    }
+    result = render_case_text("ao", fields)
+    assert "#AO" in result
+    assert "Ticket Remedy : INC888" in result
+    assert "Order ID : ORD-AO-001" in result
+    assert "Nomer Indihome : 0211112222" in result
+    assert "Last Milestone : TSEL ACTIVATION FALLOUT" in result
+    assert "MSISDN" not in result
+
+
+def test_render_header_ao():
+    """Header default menyebut 'case AO'."""
+    result = render_header([{"number": "6281234567890"}], "ao")
+    assert "case AO ada 1 case lagi" in result
+
+
 def test_render_case_text_non_ao_with_evidence():
     """Non AO with link_evidence array."""
     fields = {
@@ -404,6 +430,12 @@ def test_case_fields_field_keys_mobile():
     assert keys == ["ticket_remedy", "case_id", "msisdn", "request_case", "detail_case", "link_evidence"]
 
 
+def test_case_fields_field_keys_ao():
+    """AO (v1.31) field keys identik dengan Non AO."""
+    keys = [k for k, _ in CASE_FIELDS["ao"]]
+    assert keys == [k for k, _ in CASE_FIELDS["non_ao"]]
+
+
 def test_required_fields_non_order():
     """Non Order required: ticket_remedy, no_indihome."""
     assert REQUIRED_FIELDS["non_order"] == {"ticket_remedy", "no_indihome"}
@@ -412,6 +444,12 @@ def test_required_fields_non_order():
 def test_required_fields_non_ao():
     """Non AO required: ticket_remedy, order_id, no_indihome."""
     assert REQUIRED_FIELDS["non_ao"] == {"ticket_remedy", "order_id", "no_indihome"}
+
+
+def test_required_fields_ao():
+    """AO (v1.31) required: sama dengan Non AO."""
+    assert REQUIRED_FIELDS["ao"] == {"ticket_remedy", "order_id", "no_indihome"}
+    assert REQUIRED_FIELDS["ao"] == REQUIRED_FIELDS["non_ao"]
 
 
 def test_required_fields_mobile():
