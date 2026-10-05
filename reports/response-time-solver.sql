@@ -43,7 +43,6 @@ latency AS (
     SELECT c.id,
            c.case_code,
            c.status,
-           g.name AS group_name,
            fr.author,
            fr.author_name,
            fr.first_reply_at,
