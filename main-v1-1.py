@@ -80,6 +80,9 @@ JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
 # Ensure media directory exists
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# Uptime tracker (health detail)
+_app_start_time = time.time()
+
 
 async def _download_media(waha_url: str) -> str | None:
     """Download media from WAHA and save locally. Return local filename or None."""
@@ -2946,21 +2949,58 @@ async def media_proxy(url: str = Query(..., description="URL media dari WAHA")):
         raise HTTPException(status_code=502, detail=f"Failed to fetch media: {e}")
 
 
+def _waha_session_healthy(s: dict) -> bool:
+    """Session WAHA sehat hanya jika status == WORKING."""
+    return (s.get("status") or "") == "WORKING"
+
+
+async def collect_health() -> dict:
+    """Kumpulkan status detail DB + WAHA (HTTP & tiap session).
+
+    Dipakai bersama oleh GET /health dan POST /api/health/alert supaya kedua
+    endpoint punya satu sumber kebenaran. Return dict (lihat test).
+    """
+    import time as _time
+    from datetime import datetime, timezone as _tz
+    out = {
+        "status": "ok",
+        "timestamp": datetime.now(_tz.utc).isoformat(),
+        "uptime_seconds": int(_time.time() - _app_start_time),
+        "db": {"status": "ok", "error": None},
+        "waha": {"http": {"status": "ok", "status_code": None}, "sessions": []},
+    }
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception as e:
+        out["db"] = {"status": "error", "error": str(e)[:200]}
+        out["status"] = "degraded"
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{WAHA_URL}/api/sessions", headers=WAHA_HEADERS)
+            out["waha"]["http"]["status_code"] = r.status_code
+            if r.status_code == 200:
+                for s in r.json():
+                    out["waha"]["sessions"].append({
+                        "name": s.get("name"),
+                        "status": s.get("status"),
+                        "push_name": (s.get("me") or {}).get("pushName"),
+                        "engine_state": (s.get("engine") or {}).get("state"),
+                    })
+                if not any(_waha_session_healthy(s) for s in out["waha"]["sessions"]):
+                    out["status"] = "degraded"
+            else:
+                out["waha"]["http"]["status"] = "error"
+                out["status"] = "degraded"
+    except Exception as e:
+        out["waha"]["http"] = {"status": "error", "status_code": None}
+        out["status"] = "degraded"
+        out.setdefault("waha", {})["error"] = str(e)[:200]
+    return out
+
+
 @app.get("/health", tags=["System"],
          summary="Health check",
          description="Cek status koneksi database dan WAHA service. Tidak perlu auth.")
 async def health():
-    out = {"status": "ok", "db": "unknown", "waha": "unknown"}
-    try:
-        with db() as conn, conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            out["db"] = "ok"
-    except Exception as e:
-        out["db"] = f"error: {e}"
-    try:
-        async with httpx.AsyncClient(timeout=3) as c:
-            r = await c.get(f"{WAHA_URL}/api/sessions", headers=WAHA_HEADERS)
-            out["waha"] = "ok" if r.status_code == 200 else f"http {r.status_code}"
-    except Exception as e:
-        out["waha"] = f"error: {e}"
-    return out
+    return await collect_health()

@@ -365,6 +365,11 @@ class TestHealthCheck:
         with patch.object(main_module, "db", return_value=mock_conn):
             mock_get_resp = MagicMock()
             mock_get_resp.status_code = 200
+            mock_get_resp.json.return_value = [
+                {"name": "default", "status": "WORKING",
+                 "me": {"pushName": "itsupportjateng"},
+                 "engine": {"state": "CONNECTED"}},
+            ]
             mock_async_client = AsyncMock()
             mock_async_client.get.return_value = mock_get_resp
             with patch.object(main_module.httpx, "AsyncClient") as mock_ac:
@@ -376,8 +381,29 @@ class TestHealthCheck:
                 assert response.status_code == 200
                 data = response.json()
                 assert data["status"] == "ok"
-                assert data["db"] == "ok"
-                assert data["waha"] == "ok"
+                assert data["db"]["status"] == "ok"
+                assert data["waha"]["http"]["status"] == "ok"
+                assert data["waha"]["sessions"][0]["status"] == "WORKING"
+
+    def test_health_degraded_when_session_failed(self, mock_waha):
+        """Session WAHA bukan WORKING -> /health tetap 200 tapi status degraded."""
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn):
+            mock_get_resp = MagicMock()
+            mock_get_resp.status_code = 200
+            mock_get_resp.json.return_value = [{"name": "default", "status": "FAILED",
+                                                "me": None, "engine": None}]
+            mock_async_client = AsyncMock()
+            mock_async_client.get.return_value = mock_get_resp
+            with patch.object(main_module.httpx, "AsyncClient") as mock_ac:
+                mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_async_client)
+                mock_ac.return_value.__aexit__ = AsyncMock(return_value=False)
+                tc = TestClient(main_module.app)
+                response = tc.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["waha"]["sessions"][0]["status"] == "FAILED"
 
 
 class TestCaseDetail:
