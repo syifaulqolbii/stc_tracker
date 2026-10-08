@@ -3051,3 +3051,97 @@ async def send_telegram(text: str) -> bool:
          description="Cek status koneksi database dan WAHA service. Tidak perlu auth.")
 async def health():
     return await collect_health()
+
+
+def _service_keys(h: dict) -> list[str]:
+    keys = ["db", "waha.http"]
+    for s in h.get("waha", {}).get("sessions", []):
+        keys.append(f"waha.session:{s.get('name') or '?'}")
+    return keys
+
+
+def _service_state(h: dict, key: str) -> tuple[str, str]:
+    """Return (state, detail) untuk satu service key."""
+    if key == "db":
+        ok = h["db"]["status"] == "ok"
+        return ("ok", None) if ok else ("down", h["db"].get("error") or "db error")
+    if key == "waha.http":
+        ok = h["waha"]["http"]["status"] == "ok"
+        return ("ok", None) if ok else ("down", f"HTTP {h['waha']['http'].get('status_code')}")
+    # waha.session:<name>
+    name = key.split(":", 1)[1]
+    for s in h["waha"]["sessions"]:
+        if (s.get("name") or "?") == name:
+            if s.get("status") == "WORKING":
+                return ("ok", None)
+            if s.get("status") == "SCAN_QR_CODE":
+                return ("down", "SCAN_QR_CODE — perlu scan QR ulang")
+            return ("down", s.get("status") or "unknown")
+    return ("down", "session tidak ada di response")
+
+
+async def run_health_alert() -> dict:
+    """Check kesehatan, bandingkan dengan alert_state, kirim Telegram sesuai transisi."""
+    h = await collect_health()
+    result = {"checked": _service_keys(h), "alerted": [], "recovered": [],
+              "realerted": [], "noop": []}
+    now = datetime.now(timezone.utc)
+    with db() as conn, conn.cursor() as cur:
+        for key in result["checked"]:
+            state, detail = _service_state(h, key)
+            cur.execute("SELECT * FROM alert_state WHERE service = %s", (key,))
+            row = cur.fetchone()
+            if state == "ok":
+                if row and row["state"] == "down":
+                    dur = ""
+                    if row.get("first_seen_down_at"):
+                        mins = int((now - row["first_seen_down_at"]).total_seconds() // 60)
+                        dur = f" (down ±{mins} menit)"
+                    await send_telegram(
+                        f"✅ [STC Tracker] {key} pulih{dur} — service normal kembali.")
+                    cur.execute(
+                        """UPDATE alert_state SET state='ok', detail=NULL,
+                           last_ok_at=now(), updated_at=now() WHERE service=%s""", (key,))
+                    result["recovered"].append(key)
+                continue
+            # state == down
+            if not row:
+                await send_telegram(
+                    f"🚨 [STC Tracker] {key} DOWN: {detail}")
+                cur.execute(
+                    """INSERT INTO alert_state (service, state, detail, first_seen_down_at,
+                       last_alert_at, alert_count)
+                       VALUES (%s,'down',%s,now(),now(),1)
+                       ON CONFLICT (service) DO UPDATE
+                         SET state='down', detail=EXCLUDED.detail,
+                             first_seen_down_at=COALESCE(alert_state.first_seen_down_at, now()),
+                             last_alert_at=now(), alert_count=alert_state.alert_count+1,
+                             updated_at=now()""",
+                    (key, detail))
+                result["alerted"].append(key)
+            elif row["state"] == "down":
+                remind_h = HEALTH_ALERT_REMINDER_HOURS
+                last_alert = row.get("last_alert_at")
+                if last_alert is None or (now - last_alert) >= timedelta(hours=remind_h):
+                    await send_telegram(
+                        f"⚠️ [STC Tracker] {key} MASIH down sejak "
+                        f"{row.get('first_seen_down_at') or '?'} — {detail}")
+                    cur.execute(
+                        """UPDATE alert_state SET detail=%s, last_alert_at=now(),
+                           alert_count=alert_count+1, updated_at=now() WHERE service=%s""",
+                        (detail, key))
+                    result["realerted"].append(key)
+                else:
+                    result["noop"].append(key)
+        conn.commit()
+    return result
+
+
+@app.post("/api/health/alert", tags=["System"],
+          summary="Cek kesehatan service & kirim alert Telegram",
+          description="Dipanggil cron tiap 5 menit. Kirim Telegram saat service turun, "
+                      "re-alert tiap HEALTH_ALERT_REMINDER_HOURS, pesan pemulihan saat normal.")
+async def health_alert_endpoint(request: Request,
+                                _auth: str = Depends(verify_api_key),
+                                _rate: None = Depends(check_rate_limit)):
+    return await run_health_alert()
