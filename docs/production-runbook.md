@@ -795,13 +795,15 @@ Sejak v1.33, `GET /health` mengembalikan status detail (bukan lagi flat `{"db":"
 **Env baru** (semua opsional — tanpa token/chat alert di-skip, log warning):
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (contoh `-5326937435`), `HEALTH_ALERT_REMINDER_HOURS` (default 6). Tambahkan ke `.env` lalu restart `docker compose up -d app`.
 
-**Cron di VM** — script wrapper `scripts/health-alert-cron.sh` menyusul di Task 5; setelah ada, pasang di crontab:
+**Cron di VM** — script wrapper `scripts/health-alert-cron.sh` sudah dibuat (Task 5): panggil `POST /api/health/alert` tiap 5 menit dengan `X-API-Key` dari `.env`; kalau backend tidak merespons (HTTP ≠ 200), script kirim pesan fallback "🚨 [STC Tracker] Backend DOWN — health alert tidak merespons" langsung ke Telegram. Pasang di crontab:
 
 ```cron
 */5 * * * * cd ~/stc_tracker && bash scripts/health-alert-cron.sh >> backups/health-alert.log 2>&1
 ```
 
 Catatan: kalau backend sendiri down, alert tetap terkirim — script punya fallback langsung ke Telegram saat `/api/health/alert` tidak merespons.
+
+**Tes manual script:** `bash scripts/health-alert-cron.sh` — saat service sehat harus no-op dengan HTTP 200 (tidak ada pesan Telegram); kalau backend down, pesan Telegram fallback terkirim.
 
 **Pemeriksaan manual:**
 
