@@ -350,7 +350,33 @@ git commit -m "feat: send_telegram helper + alert_state table (health alert, v1.
 - Consumes: `collect_health()` (Task 1), `send_telegram()` + env (Task 2), tabel `alert_state` (Task 2), `verify_api_key`, `check_rate_limit` (sudah ada)
 - Produces: endpoint `POST /api/health/alert` → `{checked, alerted, recovered, realerted, noop}`
 
-- [ ] **Step 1: Tulis failing test** (tambah kelas di `tests/test_health_alert.py`):
+- [ ] **Step 1: Tulis failing test** (tambah kelas di `tests/test_health_alert.py`). **Catatan penting:** `mock_waha` dan `_reset_rate_limit` di `tests/test_api.py` adalah fixture LOKAL file itu (tidak ada `conftest.py`), jadi `test_health_alert.py` perlu fixture sendiri (pola sama, salin dari `test_api.py` baris 23-36 & 120-127). Tambahkan di `tests/test_health_alert.py` SETELAH `TestSendTelegram`:
+
+```python
+@pytest.fixture
+def mock_waha():
+    """Mock WAHA HTTP client (fixture lokal — tidak ada conftest.py)."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"id": {"_serialized": "test_msg_123"}}
+    mock_response.raise_for_status = MagicMock()
+    with patch.object(main_module.httpx, "AsyncClient") as mock_client:
+        async_client = AsyncMock()
+        async_client.post.return_value = mock_response
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=async_client)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        yield async_client
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """Bersihkan rate limiter in-memory antar test (pola test_api.py)."""
+    main_module._rate_buckets.clear()
+    yield
+    main_module._rate_buckets.clear()
+```
+
+Lalu kelas endpoint:
 
 ```python
 def _alert_client(fetchone_seq=None, fetchall_rows=None):
@@ -362,7 +388,9 @@ def _alert_client(fetchone_seq=None, fetchall_rows=None):
     conn.cursor.return_value = cur
     cur.__enter__ = MagicMock(return_value=cur); cur.__exit__ = MagicMock(return_value=False)
     if fetchone_seq is not None:
-        cur.fetchone.side_effect = fetchone_seq
+        # JANGAN side_effect=[None] — dipanggil berulang (sekali per service key);
+        # pad 40 slot None supaya tidak StopIteration di call ke-4 dst.
+        cur.fetchone.side_effect = list(fetchone_seq) + [None] * 40
     if fetchall_rows is not None:
         cur.fetchall.return_value = fetchall_rows
     stack = patch.object(main_module, "db", return_value=conn)
@@ -428,12 +456,9 @@ class TestHealthAlertEndpoint:
 Run: `python -m pytest tests/test_health_alert.py::TestHealthAlertEndpoint -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implementasi endpoint** (tambah setelah fungsi `health()`):
+- [ ] **Step 3: Implementasi endpoint** (tambah setelah fungsi `health()`). **Catatan import:** `main-v1-1.py` SUDAH punya `from datetime import datetime, timedelta, timezone` di baris 31 — jangan tambah import duplikat; pakai `timezone` (bukan alias `_tz`):
 
 ```python
-from datetime import datetime, timedelta, timezone as _tz
-
-
 def _service_keys(h: dict) -> list[str]:
     keys = ["db", "waha.http"]
     for s in h.get("waha", {}).get("sessions", []):
@@ -466,7 +491,7 @@ async def run_health_alert() -> dict:
     h = await collect_health()
     result = {"checked": _service_keys(h), "alerted": [], "recovered": [],
               "realerted": [], "noop": []}
-    now = datetime.now(_tz.utc)
+    now = datetime.now(timezone.utc)
     with db() as conn, conn.cursor() as cur:
         for key in result["checked"]:
             state, detail = _service_state(h, key)
