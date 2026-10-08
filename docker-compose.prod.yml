@@ -13,6 +13,9 @@ services:
       - WORKERS=4
       - LOG_LEVEL=warning
       - RATE_LIMIT_RPM=120
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - HEALTH_ALERT_REMINDER_HOURS=${HEALTH_ALERT_REMINDER_HOURS:-6}
     deploy:
       resources:
         limits:

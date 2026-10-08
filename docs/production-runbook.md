@@ -74,7 +74,7 @@ curl -sI https://API_DOMAIN/health | head -20
 docker logs moban-tracker --tail 100
 ```
 
-**Kesimpulan Phase 1:** `{"status":"ok","db":"ok","waha":"ok"}`, docs 200, TLS valid, tidak ada traceback.
+**Kesimpulan Phase 1:** `status: ok` (db ok, waha.http ok, session WORKING), docs 200, TLS valid, tidak ada traceback.
 
 ---
 
@@ -772,7 +772,63 @@ docker network connect stc_tracker_moban-net waha
 # 4. Verifikasi:
 sleep 40
 docker exec waha wget -qO- --header="X-Api-Key: $WAHA_KEY" http://localhost:3000/api/sessions   # harus WORKING
-curl -s https://api.stc.syfa.site/health                                                        # waha: ok
+curl -s https://api.stc.syfa.site/health                                                        # status: ok — db ok, waha.http ok, session WORKING
+```
+
+### Monitoring health → Telegram (v1.33)
+
+Sejak v1.33, `GET /health` mengembalikan status detail (bukan lagi flat `{"db":"ok","waha":"ok"}`):
+
+- `status`: `"ok"` atau `"degraded"`
+- `db`: `{"status": "ok"|"error", "error": null|str}`
+- `waha.http`: `{"status": "ok"|"error", "status_code": int|null}`
+- `waha.sessions[]`: daftar session dengan `name`, `status` (`WORKING`/`FAILED`/`SCAN_QR_CODE`), `push_name`, `engine_state`
+
+`status` menjadi `"degraded"` saat DB error, HTTP WAHA bukan 200, atau ada session yang bukan `WORKING`. Endpoint **tetap HTTP 200** walau `degraded` — healthcheck Docker (`curl -f /health`) tetap hijau, jadi `degraded` TIDAK memicu restart.
+
+**`POST /api/health/alert`** (auth `X-API-Key`) — dipanggil cron tiap 5 menit, membandingkan status sekarang dengan tabel state `alert_state` di DB, lalu kirim Telegram:
+
+- 🚨 saat sebuah service baru down
+- ⚠️ re-alert tiap `HEALTH_ALERT_REMINDER_HOURS` (default 6 jam, via env) selama masih down
+- ✅ saat service pulih kembali
+
+**Env baru** (semua opsional — tanpa token/chat alert di-skip, log warning):
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (contoh `-5326937435`), `HEALTH_ALERT_REMINDER_HOURS` (default 6). Tambahkan ke `.env` lalu restart `docker compose up -d app`.
+
+**Cron di VM** — script wrapper `scripts/health-alert-cron.sh` menyusul di Task 5; setelah ada, pasang di crontab:
+
+```cron
+*/5 * * * * cd ~/stc_tracker && bash scripts/health-alert-cron.sh >> backups/health-alert.log 2>&1
+```
+
+Catatan: kalau backend sendiri down, alert tetap terkirim — script punya fallback langsung ke Telegram saat `/api/health/alert` tidak merespons.
+
+**Pemeriksaan manual:**
+
+```bash
+curl -s https://API_DOMAIN/health | python3 -m json.tool
+```
+
+Contoh output saat `degraded` (session WAHA butuh scan QR ulang):
+
+```json
+{
+    "status": "degraded",
+    "timestamp": "2026-10-08T03:00:00+00:00",
+    "uptime_seconds": 12345,
+    "db": {"status": "ok", "error": null},
+    "waha": {
+        "http": {"status": "ok", "status_code": 200},
+        "sessions": [
+            {
+                "name": "default",
+                "status": "SCAN_QR_CODE",
+                "push_name": null,
+                "engine_state": null
+            }
+        ]
+    }
+}
 ```
 
 ### Diagnosis cepat: kirim media gagal 500
@@ -782,7 +838,7 @@ curl -s https://api.stc.syfa.site/health                                        
 | `sendText` OK, `sendImage`/`sendFile` 500, stack berisi `static.whatsapp.net` | WhatsApp Web berubah, engine WAHA lama | Update image (prosedur di atas) |
 | Semua send gagal / session bukan WORKING | Session putus | Dashboard WAHA → scan QR ulang; cek ulang config webhook session |
 | `Cannot POST /api/{session}/sendImage` (404) | Salah path API | WAHA ini pakai `/api/sendImage` + `session` di body (bukan path param) |
-| Backend `waha: not ok` di /health | Container WAHA tidak di network `stc_tracker_moban-net` | `docker network connect stc_tracker_moban-net waha` |
+| Backend `status: degraded` di /health (waha.http error / session bukan WORKING) | Container WAHA tidak di network `stc_tracker_moban-net` | `docker network connect stc_tracker_moban-net waha` |
 
 Catatan arsitektur terkait (v1.26): backend mengirim media ke WAHA via `file.data` (base64 langsung), bukan `file.url` — WAHA tidak perlu men-download apa pun, sehingga tidak rentan hairpin NAT/DNS. Jangan kembalikan ke `file.url`.
 
