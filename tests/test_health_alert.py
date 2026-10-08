@@ -69,3 +69,42 @@ class TestCollectHealth:
             h = await main_module.collect_health()
         assert h["status"] == "degraded"
         assert h["db"]["status"] == "error"
+
+
+class TestSendTelegram:
+    @pytest.mark.asyncio
+    async def test_no_token_skips_without_raise(self):
+        with patch.object(main_module, "TELEGRAM_BOT_TOKEN", ""), \
+             patch.object(main_module, "TELEGRAM_CHAT_ID", "-5326937435"):
+            ok = await main_module.send_telegram("test")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_sends_via_bot_api(self):
+        resp = MagicMock(); resp.status_code = 200; resp.raise_for_status = MagicMock()
+        ac = AsyncMock(); ac.post.return_value = resp
+        with patch.object(main_module, "TELEGRAM_BOT_TOKEN", "123:ABC"), \
+             patch.object(main_module, "TELEGRAM_CHAT_ID", "-5326937435"), \
+             patch.object(main_module.httpx, "AsyncClient") as mh:
+            mh.return_value.__aenter__ = AsyncMock(return_value=ac)
+            mh.return_value.__aexit__ = AsyncMock(return_value=False)
+            ok = await main_module.send_telegram("halo")
+        assert ok is True
+        url = ac.post.call_args[0][0]
+        assert "api.telegram.org/bot123:ABC/sendMessage" in url
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_false(self):
+        from unittest.mock import AsyncMock as _A
+        class _Resp:
+            status_code = 500
+            def raise_for_status(self):
+                raise RuntimeError("boom")
+        ac = _A(); ac.post.return_value = _Resp()
+        with patch.object(main_module, "TELEGRAM_BOT_TOKEN", "123:ABC"), \
+             patch.object(main_module, "TELEGRAM_CHAT_ID", "-5326937435"), \
+             patch.object(main_module.httpx, "AsyncClient") as mh:
+            mh.return_value.__aenter__ = AsyncMock(return_value=ac)
+            mh.return_value.__aexit__ = AsyncMock(return_value=False)
+            ok = await main_module.send_telegram("halo")
+        assert ok is False

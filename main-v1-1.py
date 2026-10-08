@@ -61,6 +61,10 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 # Shared secret untuk webhook WAHA — kalau ter-set, POST /webhooks/waha wajib
 # membawa secret via header X-Webhook-Secret atau query ?token=... (anti spoofing)
 WAHA_WEBHOOK_SECRET = os.getenv("WAHA_WEBHOOK_SECRET", "")
+# Telegram alert (health monitoring) — dikirim saat service down
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+HEALTH_ALERT_REMINDER_HOURS = int(os.getenv("HEALTH_ALERT_REMINDER_HOURS", "6"))
 WA_GROUP_ID = os.getenv("WA_GROUP_ID", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/moban")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -187,6 +191,7 @@ _rate_buckets: dict[str, list[float]] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _ensure_alert_state_table()
     _seed_default_group()
     await _fetch_contacts()
     yield
@@ -921,6 +926,26 @@ def _groups_registry_map() -> dict[str, dict]:
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, chat_id, is_active, is_default FROM wa_groups")
         return {r["chat_id"]: r for r in cur.fetchall()}
+
+
+def _ensure_alert_state_table():
+    """Buat tabel state alert (idempotent). Dipanggil di lifespan."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS alert_state (
+                  service             TEXT PRIMARY KEY,
+                  state               TEXT NOT NULL DEFAULT 'ok',
+                  detail              TEXT,
+                  first_seen_down_at  TIMESTAMPTZ,
+                  last_alert_at       TIMESTAMPTZ,
+                  last_ok_at          TIMESTAMPTZ,
+                  alert_count         INT NOT NULL DEFAULT 0,
+                  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+                )""")
+            conn.commit()
+    except Exception as e:
+        log.warning("Failed to ensure alert_state table: %s", e)
 
 
 def _seed_default_group():
@@ -2997,6 +3022,28 @@ async def collect_health() -> dict:
         out["status"] = "degraded"
         out.setdefault("waha", {})["error"] = str(e)[:200]
     return out
+
+
+async def send_telegram(text: str) -> bool:
+    """Kirim pesan ke grup Telegram (kanal alert terpisah dari WAHA).
+
+    Tidak pernah raise: alert bersifat fire-and-forget. Return True jika
+    terkirim atau dikonfigurasi kosong (skip), False jika gagal kirim.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.warning("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID kosong — alert Telegram di-skip")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+            )
+            r.raise_for_status()
+            return True
+    except Exception as e:
+        log.warning("Telegram alert gagal: %s", e)
+        return False
 
 
 @app.get("/health", tags=["System"],
