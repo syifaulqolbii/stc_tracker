@@ -2969,3 +2969,179 @@ class TestSolverResponseMetrics:
         assert data["distribution"] == []
         assert data["per_solver"] == []
         assert data["unanswered"]["count"] == 0
+
+
+# ============================ Solver Resolution Metrics (v1.34) ============================
+
+class TestSolverResolutionMetrics:
+    """GET /api/metrics/solver-resolution — resolution time solver (satuan jam).
+
+    Definisi: t0 = cases.created_at, t1 = balasan solver TERAKHIR
+    (wa_messages.from_me=false), hanya untuk case status='done'.
+    """
+
+    def _metrics_client(self, cursor):
+        """TestClient dengan mock cursor yang dikontrol per-test.
+        Cursor harus punya __enter__ → dirinya sendiri (pola _make_mock_db)."""
+        cursor.__enter__ = MagicMock(return_value=cursor)
+        cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn, _ = _make_mock_db()
+        mock_conn.cursor.return_value = cursor
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "resolve_contact_name", new_callable=AsyncMock, return_value=None):
+            yield TestClient(main_module.app), cursor
+
+    def _dt(self, y, mo, d, h=0, mi=0, s=0):
+        return datetime(y, mo, d, h, mi, s)
+
+    def test_summary_and_distribution(self):
+        """3 case done (2.5j, 8j, 100j) → avg/median/bucket jam + 1 unresolved."""
+        resolved = [
+            {"id": 1, "case_code": "INC1", "status": "done", "group_name": "G1",
+             "regional_name": "Jateng DIY", "kirim_case_at": self._dt(2026, 10, 1, 1),
+             "solver": "IT - SMOPS", "balasan_terakhir_at": self._dt(2026, 10, 1, 3, 30),
+             "resolution_jam": 2.5},
+            {"id": 2, "case_code": "INC2", "status": "done", "group_name": "G1",
+             "regional_name": "Jateng DIY", "kirim_case_at": self._dt(2026, 10, 2, 1),
+             "solver": "IT - SMOPS", "balasan_terakhir_at": self._dt(2026, 10, 2, 9),
+             "resolution_jam": 8.0},
+            {"id": 3, "case_code": "INC3", "status": "done", "group_name": "G2",
+             "regional_name": "Jabar", "kirim_case_at": self._dt(2026, 10, 3, 1),
+             "solver": "Furqon", "balasan_terakhir_at": self._dt(2026, 10, 7, 5),
+             "resolution_jam": 100.0},
+        ]
+        unresolved = [{"id": 9, "case_code": "INC9", "status": "in_progress", "group_name": "G1",
+                       "regional_name": "Jateng DIY", "created_at": self._dt(2026, 10, 4, 1),
+                       "menit_sejak_kirim": 60.0}]
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [resolved, unresolved]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution")
+            assert r.status_code == 200
+            data = r.json()
+        s = data["summary"]
+        assert s["total_cases"] == 3
+        assert s["avg_jam"] == round((2.5 + 8.0 + 100.0) / 3, 2)
+        assert s["median_jam"] == 8.0
+        assert s["min_jam"] == 2.5 and s["max_jam"] == 100.0
+        dist = {d["bucket"]: d for d in data["distribution"]}
+        assert dist["lt_1h"]["jumlah_case"] == 0
+        assert dist["b_1_6h"]["jumlah_case"] == 1   # 2.5j
+        assert dist["b_6_24h"]["jumlah_case"] == 1  # 8j
+        assert dist["gt_24h"]["jumlah_case"] == 1   # 100j
+        assert dist["b_1_6h"]["persen"] == 33.3
+        assert data["unresolved"]["count"] == 1
+        assert data["cases"][0]["case_code"] == "INC1"
+
+    def test_per_solver_median(self):
+        """Per-solver median sendiri; sort by median ascending."""
+        resolved = [
+            {"id": 1, "case_code": "A", "status": "done", "group_name": "G",
+             "regional_name": "R", "kirim_case_at": self._dt(2026, 10, 1),
+             "solver": "SMOPS", "balasan_terakhir_at": self._dt(2026, 10, 1),
+             "resolution_jam": 1.0},
+            {"id": 2, "case_code": "B", "status": "done", "group_name": "G",
+             "regional_name": "R", "kirim_case_at": self._dt(2026, 10, 2),
+             "solver": "SMOPS", "balasan_terakhir_at": self._dt(2026, 10, 2),
+             "resolution_jam": 90.0},
+            {"id": 3, "case_code": "C", "status": "done", "group_name": "G",
+             "regional_name": "R", "kirim_case_at": self._dt(2026, 10, 3),
+             "solver": "Alif", "balasan_terakhir_at": self._dt(2026, 10, 3),
+             "resolution_jam": 5.0},
+        ]
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [resolved, []]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution")
+            assert r.status_code == 200
+            data = r.json()
+        solvers = {s["solver"]: s for s in data["per_solver"]}
+        assert solvers["SMOPS"]["jumlah_case"] == 2
+        assert solvers["SMOPS"]["median_jam"] == 45.5   # median (1.0, 90.0)
+        assert solvers["Alif"]["median_jam"] == 5.0
+        assert data["per_solver"][0]["solver"] == "Alif"  # sort by median asc
+
+    def test_filters_passed_to_sql(self):
+        """Semua filter diteruskan ke query dengan parameter benar."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], []]
+        for tc, cur in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution", params={
+                "regional_id": 7, "solver": "smops", "group_id": 2,
+                "date_from": "2026-09-01", "date_to": "2026-09-30"})
+            assert r.status_code == 200
+        # query 1: params regional, solver, group, date_from, date_to+1d
+        args1 = cur.execute.call_args_list[0].args[1]
+        assert args1 == [7, "%smops%", 2,
+                         datetime(2026, 9, 1), datetime(2026, 9, 30) + timedelta(days=1)]
+        # query 2: pending tidak boleh dapat filter solver
+        args2 = cur.execute.call_args_list[1].args[1]
+        assert args2 == [7, 2, datetime(2026, 9, 1), datetime(2026, 9, 30) + timedelta(days=1)]
+
+    def test_resolution_uses_last_reply_not_first(self):
+        """Guard regresi: SQL harus ambil balasan TERAKHIR (ORDER BY created_at DESC).
+
+        Kalau ini ASC, resolution time jadi sama dengan response time — bug
+        yang persis ingin dihindari endpoint ini.
+        """
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], []]
+        for tc, cur in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution")
+            assert r.status_code == 200
+        sql1 = cur.execute.call_args_list[0].args[0]
+        assert "ORDER BY case_id, created_at DESC" in sql1
+        assert "c.status = 'done'" in sql1
+        # watchlist harus mencakup case non-done DAN done tanpa balasan solver
+        sql2 = cur.execute.call_args_list[1].args[0]
+        assert "c.status != 'done'" in sql2
+        assert "NOT EXISTS" in sql2
+
+    def test_done_without_reply_goes_to_unresolved_not_summary(self):
+        """Case done tanpa balasan solver → tidak dihitung, muncul di unresolved."""
+        unresolved = [{"id": 5, "case_code": "INC5", "status": "done", "group_name": "G",
+                       "regional_name": "R", "created_at": self._dt(2026, 10, 1),
+                       "menit_sejak_kirim": 120.0}]
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], unresolved]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution")
+            assert r.status_code == 200
+            data = r.json()
+        assert data["summary"]["total_cases"] == 0
+        assert data["summary"]["median_jam"] is None
+        assert data["unresolved"]["count"] == 1
+        assert data["unresolved"]["cases"][0]["status"] == "done"
+
+    def test_bad_date_format_422(self):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], []]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution", params={"date_from": "01-09-2026"})
+            assert r.status_code == 422
+            assert "YYYY-MM-DD" in r.json()["detail"]
+
+    def test_date_from_after_date_to_422(self):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], []]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution", params={
+                "date_from": "2026-09-10", "date_to": "2026-09-01"})
+            assert r.status_code == 422
+            assert "date_from tidak boleh setelah date_to" in r.json()["detail"]
+
+    def test_empty_result(self):
+        """Tanpa data → summary nol, distribution kosong, bukan error."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[], []]
+        for tc, _ in self._metrics_client(mock_cursor):
+            r = tc.get("/api/metrics/solver-resolution")
+            assert r.status_code == 200
+            data = r.json()
+        assert data["summary"]["total_cases"] == 0
+        assert data["summary"]["median_jam"] is None
+        assert data["distribution"] == []
+        assert data["per_solver"] == []
+        assert data["unresolved"]["count"] == 0
+        # filter echo balik walau kosong
+        assert data["filters"]["regional_id"] is None

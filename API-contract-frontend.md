@@ -1726,6 +1726,63 @@ https://imgur.com/app_error
 
 ## 12. Changelog
 
+### v1.34 (9 Oktober 2026) — metrik resolution time solver
+Endpoint baru **`GET /api/metrics/solver-resolution`** (tag: System) — pasangan `solver-response` (v1.32). Kalau response time mengukur *seberapa cepat solver pertama membalas*, resolution time mengukur ***berapa lama total sampai case selesai***.
+
+**Definisi:**
+
+| Titik | Sumber |
+|---|---|
+| `t0` | `cases.created_at` — ticket dikirim ke grup solver |
+| `t1` | **Balasan solver TERAKHIR** (`MAX(wa_messages.created_at)`, `from_me=false`) |
+| Syarat | `cases.status = 'done'` |
+
+`resolution_jam = (t1 - t0) / 3600` — satuan **jam** (bukan menit).
+
+**Penting — kenapa balasan TERAKHIR, bukan timestamp update manual:**
+Alur nyata di lapangan: solver membalas *"bisa dicek lagi rekan"* (tidak mengandung keyword done → status tetap `in_progress`), lalu admin menutup case manual di web. Case seperti itu **ikut dihitung**, tapi yang diambil **waktu balasan solver terakhir itu** — bukan waktu admin klik tombol done. Update manual dari web memang tidak pernah menulis ke `wa_messages`, jadi titik akhir selalu berasal dari solver.
+
+**Case `done` tanpa balasan solver sama sekali** (mis. langsung ditutup dari web) **tidak dihitung** di summary karena tidak punya titik akhir — muncul di watchlist `unresolved` dengan `status: "done"` sebagai action item admin.
+
+**Query params** (semua opsional, digabung AND) — identik v1.32:
+
+| Param | Tipe | Deskripsi |
+|---|---|---|
+| `regional_id` | int | Hanya case di regional itu |
+| `solver` | string | Substring nama solver, case-insensitive |
+| `group_id` | int | Hanya case di grup WA itu |
+| `date_from` | YYYY-MM-DD | Filter `created_at` mulai (inklusif) |
+| `date_to` | YYYY-MM-DD | Filter `created_at` sampai (inklusif) |
+
+Format tanggal salah / `date_from` > `date_to` → `422`.
+
+**Response:** `{filters, summary, distribution, per_solver, unresolved, cases}`
+
+- `summary`: `{total_cases, avg_jam, min_jam, max_jam, median_jam}` (null bila kosong)
+- `distribution`: bucket **jam** — `lt_1h` (<1 jam), `b_1_6h` (1–6 jam), `b_6_24h` (6–24 jam), `gt_24h` (>24 jam); masing-masing `{bucket, jumlah_case, persen}`
+- `per_solver`: `{solver, jumlah_case, avg_jam, min_jam, max_jam, median_jam}` — **sort by median_jam ascending**; dikreditkan ke penulis **balasan terakhir**
+- `unresolved`: `{count, cases[]}` — case belum `done`, **plus** case `done` tanpa balasan solver (watchlist)
+- `cases[]`: `{id, case_code, status, group_name, regional_name, kirim_case_at, solver, balasan_terakhir_at, resolution_jam}`
+
+**Contoh:**
+```bash
+# semua case done
+GET /api/metrics/solver-resolution
+# regional Jateng DIY, solver SMOPS, September
+GET /api/metrics/solver-resolution?regional_id=7&solver=smops&date_from=2026-09-01&date_to=2026-09-30
+```
+
+**Catatan interpretasi:** sama seperti v1.32, pakai `median_jam` — `avg_jam` bisa terseret outlier data historis hasil `/api/crawl` (timestamp = waktu crawl, bukan waktu asli pesan WA). Panduan FE: `docs/panduan-frontend-metrics-solver-resolution.md`.
+
+> Catatan penomoran: commit health-alert Telegram sudah memakai label v1.33 di runbook & pesan commit, jadi fitur ini memakai **v1.34** agar tidak menabrak label tersebut.
+
+### v1.33 (8 Oktober 2026) — health detail + alert Telegram
+`GET /health` kini mengembalikan status **detail** (bukan lagi flat `{"status","db","waha"}`): `status` (`ok`/`degraded`), `db.{status,error}`, `waha.http.{status,status_code}`, dan `waha.sessions[]` (`name`, `status`, `push_name`, `engine_state`). `degraded` bila DB error, HTTP WAHA ≠ 200, atau ada session yang bukan `WORKING`. **Endpoint tetap HTTP 200** walau `degraded` — healthcheck Docker tidak ikut gagal.
+
+Endpoint baru **`POST /api/health/alert`** (auth `X-API-Key`) untuk cron: membandingkan status sekarang dengan tabel `alert_state`, lalu kirim Telegram saat service baru down, re-alert berkala, dan saat pulih. Env opsional: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HEALTH_ALERT_REMINDER_HOURS` (default 6). Detail operasional: `docs/production-runbook.md`.
+
+> Implikasi FE: kalau banner "sistem gangguan" membaca `db`/`waha` sebagai string, sesuaikan ke bentuk objek di atas.
+
 ### v1.32 (5 Oktober 2026) — metrik response time solver
 Endpoint baru **`GET /api/metrics/solver-response`** (tag: System) — response time solver: waktu case dikirim ke grup (`cases.created_at`) → balasan **pertama** dari solver (`wa_messages.from_me=false`, status diabaikan, semua case open/in_progress/done ikut dihitung).
 

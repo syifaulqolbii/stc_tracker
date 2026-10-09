@@ -205,7 +205,7 @@ app = FastAPI(
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.32.0",
+    version="1.34.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -2416,6 +2416,232 @@ def solver_response_metrics(
             "group_id": group_id, "date_from": date_from, "date_to": date_to,
         },
         **_summarize_response_rows(rows, pending),
+        "cases": rows,
+    }
+
+
+# ---------------------------------------------------------------- Solver Resolution Metrics (v1.34)
+
+def _solver_resolution_metrics(
+    cur, regional_id, solver, group_id,
+    date_from=None, date_to=None,
+):
+    """Hitung resolution time solver: case dikirim (cases.created_at) -> balasan
+    solver TERAKHIR (wa_messages.from_me=false), untuk case yang statusnya done.
+
+    Berbeda dengan response time (balasan PERTAMA): di sini yang diambil balasan
+    TERAKHIR, karena alur nyata di lapangan sering kali solver membalas
+    "bisa dicek lagi rekan" (tanpa keyword done, status tetap in_progress) lalu
+    admin menutup case manual di web. Yang dihitung tetap waktu balasan solver
+    terakhir itu — BUKAN timestamp klik admin (update manual memang tidak pernah
+    menulis ke wa_messages).
+
+    Semua filter opsional, digabung AND (sama seperti _solver_response_metrics):
+    - regional_id : hanya case di regional itu
+    - solver      : COALESCE(author_name, author) ILIKE %solver% (substring,
+                    case-insensitive)
+    - group_id    : hanya case di grup WA itu
+    - date_from/date_to : filter created_at case (inklusif, YYYY-MM-DD)
+
+    Return: (rows_detail, rows_unresolved) — list[dict].
+    Latency dihitung di DB; agregat dihitung di Python supaya median per solver
+    akurat dan mudah dites.
+    """
+    if date_from:
+        try:
+            date_from = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_from harus format YYYY-MM-DD (contoh: 2026-09-01)")
+    if date_to:
+        try:
+            date_to = datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail="date_to harus format YYYY-MM-DD (contoh: 2026-10-05)")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from tidak boleh setelah date_to")
+
+    base_join = """FROM cases c
+                    JOIN last_reply lr ON lr.case_id = c.id
+                    LEFT JOIN wa_groups g ON g.id = c.group_id
+                    LEFT JOIN regionals r ON c.regional_id = r.id
+                    WHERE c.deleted_at IS NULL
+                      AND c.status = 'done'
+                      AND lr.last_reply_at >= c.created_at"""
+    conds, args = [], []
+    if regional_id:
+        conds.append("c.regional_id = %s")
+        args.append(regional_id)
+    if solver:
+        conds.append("COALESCE(lr.author_name, lr.author) ILIKE %s")
+        args.append(f"%{solver}%")
+    if group_id:
+        conds.append("c.group_id = %s")
+        args.append(group_id)
+    if date_from:
+        conds.append("c.created_at >= %s")
+        args.append(date_from)
+    if date_to:
+        conds.append("c.created_at < %s")   # +1 hari: date_to inklusif
+        args.append(date_to + timedelta(days=1))
+    where_extra = (" AND " + " AND ".join(conds)) if conds else ""
+
+    # 1) Detail per case done yang punya balasan solver
+    cur.execute(
+        f"""WITH last_reply AS (
+                SELECT DISTINCT ON (case_id)
+                       case_id, author, author_name, created_at AS last_reply_at
+                FROM wa_messages
+                WHERE from_me = false AND case_id IS NOT NULL
+                ORDER BY case_id, created_at DESC
+            )
+            SELECT c.id, c.case_code, c.status, g.name AS group_name,
+                   r.name AS regional_name,
+                   c.created_at AS kirim_case_at,
+                   COALESCE(lr.author_name, lr.author) AS solver,
+                   lr.last_reply_at AS balasan_terakhir_at,
+                   EXTRACT(EPOCH FROM (lr.last_reply_at - c.created_at)) / 3600.0
+                       AS resolution_jam
+            {base_join}{where_extra}
+            ORDER BY c.created_at ASC""",
+        args,
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    # 2) Watchlist unresolved: belum done, ATAU done tanpa satupun balasan solver
+    #    (tidak punya titik akhir -> tidak bisa dihitung, jangan cemari rata-rata)
+    pend_conds = ["c.deleted_at IS NULL",
+                  """(c.status != 'done'
+                      OR NOT EXISTS (SELECT 1 FROM wa_messages w
+                                     WHERE w.case_id = c.id AND w.from_me = false))"""]
+    pend_args: list = []
+    if regional_id:
+        pend_conds.append("c.regional_id = %s")
+        pend_args.append(regional_id)
+    if solver:
+        # solver filter tidak relevan untuk case tanpa balasan — skip
+        pass
+    if group_id:
+        pend_conds.append("c.group_id = %s")
+        pend_args.append(group_id)
+    if date_from:
+        pend_conds.append("c.created_at >= %s")
+        pend_args.append(date_from)
+    if date_to:
+        pend_conds.append("c.created_at < %s")
+        pend_args.append(date_to + timedelta(days=1))
+    cur.execute(
+        f"""SELECT c.id, c.case_code, c.status, g.name AS group_name,
+                   r.name AS regional_name, c.created_at,
+                   EXTRACT(EPOCH FROM (now() - c.created_at)) / 60.0
+                       AS menit_sejak_kirim
+            FROM cases c
+            LEFT JOIN wa_groups g ON g.id = c.group_id
+            LEFT JOIN regionals r ON c.regional_id = r.id
+            WHERE {' AND '.join(pend_conds)}
+            ORDER BY c.created_at ASC""",
+        pend_args,
+    )
+    unresolved = [dict(r) for r in cur.fetchall()]
+    return rows, unresolved
+
+
+def _summarize_resolution_rows(rows: list[dict], unresolved: list[dict]) -> dict:
+    """Agregat dari detail rows (pure Python, mudah dites): summary + bucket + per-solver.
+
+    Bucket pakai satuan jam (bukan menit seperti response time): lt_1h, b_1_6h,
+    b_6_24h, gt_24h.
+    """
+    import statistics as _stats
+    lats_f = [float(r["resolution_jam"]) for r in rows]
+    if lats_f:
+        summary = {
+            "total_cases": len(lats_f),
+            "avg_jam": round(sum(lats_f) / len(lats_f), 2),
+            "min_jam": round(min(lats_f), 2),
+            "max_jam": round(max(lats_f), 2),
+            "median_jam": round(float(_stats.median(lats_f)), 2),
+        }
+        buckets = {"lt_1h": 0, "b_1_6h": 0, "b_6_24h": 0, "gt_24h": 0}
+        for v in lats_f:
+            if v < 1:
+                buckets["lt_1h"] += 1
+            elif v < 6:
+                buckets["b_1_6h"] += 1
+            elif v < 24:
+                buckets["b_6_24h"] += 1
+            else:
+                buckets["gt_24h"] += 1
+        n = len(lats_f)
+        distribution = [
+            {"bucket": k, "jumlah_case": v, "persen": round(100.0 * v / n, 1)}
+            for k, v in buckets.items()
+        ]
+    else:
+        summary = {"total_cases": 0, "avg_jam": None, "min_jam": None,
+                   "max_jam": None, "median_jam": None}
+        distribution = []
+
+    per_solver: dict[str, list[float]] = {}
+    for r in rows:
+        per_solver.setdefault(r["solver"] or "unknown", []).append(float(r["resolution_jam"]))
+    solvers = []
+    for name, vals in per_solver.items():
+        solvers.append({
+            "solver": name,
+            "jumlah_case": len(vals),
+            "avg_jam": round(sum(vals) / len(vals), 2),
+            "min_jam": round(min(vals), 2),
+            "max_jam": round(max(vals), 2),
+            "median_jam": round(float(_stats.median(vals)), 2),
+        })
+    solvers.sort(key=lambda s: s["median_jam"])
+
+    return {
+        "summary": summary,
+        "distribution": distribution,
+        "per_solver": solvers,
+        "unresolved": {
+            "count": len(unresolved),
+            "cases": unresolved,
+        },
+    }
+
+
+@app.get("/api/metrics/solver-resolution", tags=["System"],
+         summary="Metrik resolution time solver",
+         description=("Hitung resolution time solver: waktu case dikirim ke grup (cases.created_at) "
+                      "sampai balasan TERAKHIR dari solver (wa_messages.from_me=false), untuk case "
+                      "yang statusnya sudah done — termasuk case in_progress yang di-update manual "
+                      "jadi done di web (yang dihitung tetap waktu balasan solver terakhir, bukan "
+                      "timestamp update manual). Case done tanpa balasan solver sama sekali tidak "
+                      "ikut dihitung dan muncul di watchlist unresolved. Filter opsional digabung AND: "
+                      "regional_id, solver (substring nama, case-insensitive), group_id, date_from/date_to "
+                      "(inklusif, YYYY-MM-DD). Return: summary (avg/median/min/max, satuan JAM), "
+                      "distribusi bucket jam, per-solver (dengan median), detail per case, dan "
+                      "watchlist case yang belum selesai."))
+def solver_resolution_metrics(
+    request: Request,
+    regional_id: int | None = Query(None, description="Filter Regional ID. Lihat GET /api/areas/{area_id}/regionals"),
+    solver: str | None = Query(None, description="Filter nama solver (substring, case-insensitive). Contoh: smops"),
+    group_id: int | None = Query(None, description="Filter grup WA"),
+    date_from: str | None = Query(None, description="Filter created_at mulai tanggal ini (inklusif, YYYY-MM-DD)"),
+    date_to: str | None = Query(None, description="Filter created_at sampai tanggal ini (inklusif, YYYY-MM-DD)"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    with db() as conn, conn.cursor() as cur:
+        rows, unresolved = _solver_resolution_metrics(
+            cur, regional_id=regional_id, solver=solver, group_id=group_id,
+            date_from=date_from, date_to=date_to,
+        )
+    return {
+        "filters": {
+            "regional_id": regional_id, "solver": solver,
+            "group_id": group_id, "date_from": date_from, "date_to": date_to,
+        },
+        **_summarize_resolution_rows(rows, unresolved),
         "cases": rows,
     }
 
