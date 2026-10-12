@@ -98,15 +98,19 @@ async function fetchResolutionMetrics(filters = {}) {
 | `b_6_24h` | 6–24 jam | kuning |
 | `gt_24h` | > 24 jam | merah |
 
-**Angka waktu:** tampilkan `resolution_jam` dengan aturan — `< 24` → "3,5 jam"; `≥ 24` → "2,0 hari" (bagi 24, 1 desimal) supaya tidak muncul "48,0 jam". Angka `null` → tampil "—".
+**Angka waktu:** `resolution_jam` berisi nilai dalam **jam** (bisa desimal, contoh `0.2`, `3.4`, `23.39`). Aturan tampil: **`< 1 jam` → konversi ke menit** (×60, dibulatkan), **`≥ 1 jam` → tetap jam** (1 desimal), **`≥ 24 jam` → hari** (÷24, 1 desimal). Ini supaya "0,2 jam" tidak membingungkan — ditampilkan "12 mnt" — dan "1499 mnt" tidak muncul (seperti prinsip v1.32). Angka `null` → tampil "—".
 
 ```js
-function fmtJam(j) {
-  if (j == null) return "—";
-  const n = v => v.toFixed(1).replace(".", ",");
-  return j >= 24 ? `${n(j / 24)} hari` : `${n(j)} jam`;
+function fmtDurasi(jam) {
+  if (jam == null) return "—";
+  if (jam < 1) return `${Math.round(jam * 60)} mnt`;       // 0.2 jam → "12 mnt"
+  if (jam < 24) return `${jam.toFixed(1).replace(".", ",")} jam`; // 3.4 → "3,4 jam"
+  return `${(jam / 24).toFixed(1).replace(".", ",")} hari`; // 48 → "2,0 hari"
 }
+// contoh: 0.05 → "3 mnt" · 0.2 → "12 mnt" · 1.86 → "1,9 jam" · 23.39 → "23,4 jam" · 48 → "2,0 hari"
 ```
+
+> Catatan: fungsi ini dipakai untuk semua angka durasi (KPI, tabel per-solver, tabel detail). `distribution` dan `per_solver` tetap menerima `*_jam` mentah dari API — konversi menit hanya di layer tampilan, jangan mengubah data.
 
 ## 5. Layout yang disarankan
 
@@ -116,7 +120,7 @@ function fmtJam(j) {
 │ preset cepat: (7 hari) (30 hari) (bulan ini)                │
 └─────────────────────────────────────────────────────────────┘
 ┌─ 4 kartu KPI ───────────────────────────────────────────────┐
-│ Median 3,5 jam │ Avg 5,2 jam │ 56% <6 jam │ 4 belum selesai │
+│ Median 12 mnt │ Avg 1,9 jam │ 81% <1 jam │ 4 belum selesai │
 └─────────────────────────────────────────────────────────────┘
 ┌─ Distribusi (stacked bar / donut dari distribution[]) ──────┐
 ┌─ Tabel per solver: nama | n | median | avg | min | max ─────┐
@@ -139,7 +143,7 @@ function fmtJam(j) {
 
    Case di sini **tidak ikut** summary (by design), jadi jangan tampilkan "total 29" dari 25 + 4.
 
-4. **Bedakan dari halaman response time.** Dua endpoint ini mirip; jangan tertukar satuan — response time **menit**, resolution **jam**. Kalau FE menaruh keduanya di satu halaman, beri tab terpisah + label satuan yang jelas.
+4. **Bedakan dari halaman response time.** Dua endpoint ini mirip; jangan tertukar satuan — response time di API dalam **menit**, resolution di API dalam **jam** (di UI, resolution `< 1 jam` boleh ditampilkan menit — lihat §4). Kalau FE menaruh keduanya di satu halaman, beri tab terpisah + label satuan yang jelas.
 5. **Preset periode** mengurangi salah input: `7 hari` / `30 hari` / `bulan ini` cukup dihitung di FE lalu set `date_from`/`date_to` (kode sama seperti panduan v1.32).
 
 ## 7. Realtime vs data crawl (penting untuk akurasi)
@@ -153,9 +157,9 @@ Balasan yang masuk lewat backfill `/api/crawl` tersimpan dengan timestamp **wakt
 
 - [ ] Fetch + header `X-API-Key`, handling 422 menampilkan `detail`
 - [ ] Filter: dropdown regional (bertingkat dari areas), grup dari switcher existing, date picker + preset
-- [ ] KPI cards: Median (utama), Avg (dengan tooltip), % <6 jam, count unresolved
+- [ ] KPI cards: Median (utama), Avg (dengan tooltip), % <1 jam (dari bucket `lt_1h`), count unresolved
 - [ ] Bucket dikonversi ke label Indonesia + warna (tabel §4)
-- [ ] Format jam/hari otomatis; angka `null` → tampil "—"
+- [ ] Format durasi otomatis: `<1 jam` → menit, `≥1 jam` → jam, `≥24 jam` → hari; angka `null` → tampil "—"
 - [ ] Tabel per solver: sort by median, kolom jumlah_case tampil
 - [ ] Watchlist unresolved: badge merah, bedakan row `status: done` (anomali), sort by `menit_sejak_kirim` DESC, link ke `/cases/{id}`
 - [ ] Microcopy: "dihitung sampai balasan terakhir solver, bukan waktu penutupan manual"
