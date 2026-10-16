@@ -1,5 +1,5 @@
 #!/bin/bash
-# Moban FU Case Tracker — Production startup script
+# IT Tracker — Production startup script
 # Usage: ./run.sh
 
 set -e
@@ -15,7 +15,7 @@ PORT="${PORT:-8000}"
 WORKERS="${WORKERS:-2}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
-echo "Starting Moban FU Tracker..."
+echo "Starting IT Tracker..."
 echo "  Host: $HOST"
 echo "  Port: $PORT"
 echo "  Workers: $WORKERS"

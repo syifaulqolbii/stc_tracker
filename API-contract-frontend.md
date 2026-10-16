@@ -1,6 +1,6 @@
-# API Contract — Moban FU Case Tracker (untuk Tim Frontend)
+# API Contract — IT Tracker (untuk Tim Frontend)
 
-**Versi:** 1.12 · **Tanggal:** 7 September 2026 · **Backend:** FastAPI · **Base path:** `/api`
+**Versi:** 1.34 · **Tanggal:** 9 Oktober 2026 · **Backend:** FastAPI (`version="1.34.0"`) · **Base path:** `/api`
 **Referensi:** PRD v1.5, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -13,11 +13,11 @@
 |---|---| 
 | Base URL (prod) | `https://api.stc.syfa.site` (via nginx + SSL) |
 | Format | JSON, `Content-Type: application/json` |
-| Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health`, `/webhooks/waha`, dan `/api/auth/access-code` |
+| Auth | Header `X-API-Key: <key>` — **wajib** untuk semua endpoint kecuali `/health`, `/webhooks/waha`, `/api/auth/access-code`, `/api/media/file/{filename}`, dan `/api/media/proxy` |
 | Encoding waktu | ISO 8601 dengan timezone (TIMESTAMPTZ), contoh `2026-08-20T16:20:11.345+07:00` |
 | Realtime | Belum ada websocket. FE disarankan polling `GET /api/cases` tiap 30 dtk atau saat window focus |
 | Contact Names | Backend resolve `@lid` → nama kontak via WAHA API (prioritas pushname > phone book). `author_name` tersedia di messages & participants |
-| Media | Image/video dari solver di-reply ke case → tersimpan di DB. `media_url` = proxy URL yang bisa diakses browser. `media_type` = MIME type. |
+| Media | Media image/video/dokumen dari solver tersimpan di Docker volume backend (bukan di DB). `media_url` = URL lokal yang bisa diakses browser (`/api/media/file/{uuid}.{ext}`). `media_type` = MIME type. |
 
 ## 2. Enum & Konstanta
 
@@ -26,7 +26,10 @@
 |---|---|
 | `Non Order` | Case non-order (STC, SMOOA, UFO, dll) |
 | `Non AO` | Case non-activation order |
+| `AO` | Activation Order / pasang baru (v1.31) — format field identik `Non AO` |
 | `Mobile` | Case mobile |
+
+> Nama jenis di-resolve **case-insensitive** (`AO`/`Ao`/`ao` semuanya valid). Nilai di luar daftar di-downgrade ke `Non Order`.
 
 ### Sumber Ticket (tabel lookup `sumber_tickets`)
 | Nilai | Keterangan |
@@ -36,12 +39,14 @@
 | `Web IT` | Sumber dari Web IT |
 
 ### Status Case
-| Nilai | Badge |
-|---|---|
-| `open` | Abu |
-| `in_progress` | Biru |
-| `done` | Hijau |
-| `issue` | Merah |
+| Nilai | Badge | Catatan |
+|---|---|---|
+| `open` | Abu | |
+| `in_progress` | Biru | |
+| `done` | Hijau | |
+| `issue` | Merah | **Historis saja (v1.29+)** — tidak bisa lagi di-set via `POST /api/cases/{id}/status` (→ `422`). Filter `?status=issue` di §3.3 / §3.3b tetap berfungsi untuk data lama. |
+
+> Alur status sekarang: `open` → `in_progress` → `done`. Keyword `completed` (v1.29) juga memicu `done`.
 
 ### Ack (pesan keluar)
 | Nilai | Keterangan |
@@ -304,7 +309,7 @@ X-API-Key: <key>
 |---|---|---| 
 | `include_deleted` | `true` | Sertakan case yang sudah di-delete (default: false) |
 | `status` | `open` | filter enum status |
-| `case_type` | `Non Order` | filter jenis case (nama dari tabel lookup) |
+| `case_type` | `Non Order` | filter jenis case (nama dari tabel lookup: `Non Order` / `Non AO` / `AO` / `Mobile`) |
 | `area_id` | `1` | filter berdasarkan Area ID |
 | `regional_id` | `2` | filter berdasarkan Regional ID |
 | `group_id` | `1` | filter berdasarkan grup WA (ID dari `GET /api/groups`) |
@@ -800,15 +805,167 @@ Operasi ini berat (tarik histori WA + proses, dijalankan per grup). Jangan dipan
 
 ---
 
-### 3.8 `GET /health` — Health check
+### 3.8 `GET /health` — Health check (detail, v1.33)
 
 **Tidak perlu auth.**
 
-**Response `200`:** `{ "status": "ok", "db": "ok", "waha": "ok" }`
+> ⚠️ **BREAKING sejak v1.33:** response **bukan lagi** flat `{"status","db","waha"}`. `db` dan `waha` kini **objek**. Kalau banner "sistem gangguan" membandingkan `health.db !== "ok"`, perbaiki dulu — objek selalu truthy sehingga banner tidak pernah muncul.
 
-Berguna untuk banner "sistem gangguan" di UI. Nilai selain `ok` pada `db`/`waha` = backend atau WAHA bermasalah.
+**Response `200`:**
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-10-09T03:12:44.123456+00:00",
+  "uptime_seconds": 84512,
+  "db": { "status": "ok", "error": null },
+  "waha": {
+    "http": { "status": "ok", "status_code": 200 },
+    "sessions": [
+      { "name": "default", "status": "WORKING", "push_name": "STC Tracker", "engine_state": "CONNECTED" }
+    ]
+  }
+}
+```
+
+| Field | Nilai | Keterangan |
+|---|---|---|
+| `status` | `ok` \| `degraded` | Ringkasan seluruh service. **`degraded`** bila DB error, HTTP WAHA ≠ 200, atau ada session yang tidak `WORKING`. |
+| `timestamp` | ISO 8601 UTC | Waktu pengecekan |
+| `uptime_seconds` | int | Uptime proses backend |
+| `db.status` | `ok` \| `error` | `db.error` = pesan error (max 200 char) bila `error` |
+| `waha.http.status` | `ok` \| `error` | `waha.http.status_code` = HTTP status dari `GET {WAHA_URL}/api/sessions` (`null` bila tidak terjangkau) |
+| `waha.sessions[]` | array | `{name, status, push_name, engine_state}` per session WAHA |
+| `waha.error` | string | Muncul **hanya** bila WAHA tidak terjangkau (exception) |
+
+**Endpoint tetap HTTP `200`** walau `status = "degraded"` — healthcheck Docker tidak ikut gagal. Jadi FE **wajib** membaca `body.status`, bukan `resp.ok`.
+
+**Contoh render banner:**
+```js
+const h = await (await fetch("/health")).json();
+if (h.status !== "ok") showBanner("Sistem gangguan", {
+  db: h.db.status !== "ok" ? h.db.error : null,
+  waha: h.waha.http.status !== "ok" ? `HTTP ${h.waha.http.status_code ?? "unreachable"}` : null,
+  sessions: h.waha.sessions.filter(s => s.status !== "WORKING").map(s => `${s.name}: ${s.status}`),
+});
+```
+
+**Session `SCAN_QR_CODE`** = perlu scan QR ulang di WAHA (tampilkan instruksi, bukan sekadar "gangguan").
 
 ---
+
+### 3.8a `POST /api/health/alert` — Alert Telegram (v1.33, cron)
+
+**Headers:** `X-API-Key: <key>`
+
+Untuk cron (tiap 5 menit). Membandingkan hasil `GET /health` dengan tabel `alert_state`, lalu:
+
+| Transisi | Aksi |
+|---|---|
+| service baru down | kirim Telegram `🚨 ... DOWN: <detail>` |
+| masih down & `last_alert_at` ≥ `HEALTH_ALERT_REMINDER_HOURS` | re-alert `⚠️ ... MASIH down sejak <ts>` |
+| masih down & belum waktunya | skip (`noop`) |
+| pulih | kirim `✅ ... pulih (down ±N menit)` |
+
+**Response `200`:**
+```json
+{
+  "checked": ["db", "waha.http", "waha.session:default"],
+  "alerted": ["db"],
+  "recovered": [],
+  "realerted": [],
+  "noop": ["waha.http", "waha.session:default"]
+}
+```
+
+Key service: `db`, `waha.http`, `waha.session:<nama>`.
+
+**Env opsional:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HEALTH_ALERT_REMINDER_HOURS` (default `6`). Kalau token/chat kosong, alert di-skip (log warning, bukan error). Detail operasional: `docs/production-runbook.md`.
+
+**Error:** `401` API key salah · `429` rate limit.
+
+> FE tidak perlu memanggil endpoint ini — murni untuk cron server. Cukup pahami bahwa banner gangguan berbasis §3.8.
+
+---
+
+### 3.9 `GET /api/metrics/solver-response` — Response time solver (v1.32)
+
+**Headers:** `X-API-Key: <key>`
+
+Mengukur **seberapa cepat solver pertama membalas**: `cases.created_at` (ticket dikirim ke grup) → balasan **PERTAMA** solver (`wa_messages.from_me=false`, status balasan diabaikan). Semua case ikut dihitung (`open`/`in_progress`/`done`).
+
+**Query params (semua opsional, digabung AND):**
+
+| Param | Tipe | Keterangan |
+|---|---|---|
+| `regional_id` | int | Hanya case di regional itu |
+| `solver` | string | Substring nama solver, case-insensitive — `smops` cocok `IT - SMOPS` |
+| `group_id` | int | Hanya case di grup WA itu |
+| `date_from` | `YYYY-MM-DD` | Filter `created_at` mulai (inklusif) |
+| `date_to` | `YYYY-MM-DD` | Filter `created_at` sampai (inklusif) |
+
+Format tanggal salah / `date_from > date_to` → `422`.
+
+**Response `200`:** `{filters, summary, distribution, per_solver, unanswered, cases}`
+
+| Field | Bentuk |
+|---|---|
+| `filters` | echo param yang dipakai |
+| `summary` | `{total_cases, avg_menit, min_menit, max_menit, median_menit}` — **semua `null` bila tidak ada data** |
+| `distribution` | 4 bucket **menit**: `lt_5` (<5), `b_5_15` (5–15), `b_15_60` (15–60), `gt_60` (>60); tiap item `{bucket, jumlah_case, persen}`. **`[]` bila tidak ada data** (bukan 4 bucket berisi 0) |
+| `per_solver` | `{solver, jumlah_case, avg_menit, min_menit, max_menit, median_menit}` — **sort by `median_menit` ascending** |
+| `unanswered` | `{count, cases[]}` — case yang **belum pernah** dibalas solver (watchlist) |
+| `cases[]` | `{id, case_code, status, group_name, regional_name, kirim_case_at, solver, balasan_pertama_at, response_menit}` |
+
+**Contoh:**
+```bash
+GET /api/metrics/solver-response
+GET /api/metrics/solver-response?regional_id=7&solver=smops&date_from=2026-09-29&date_to=2026-10-05
+```
+
+> **Pakai `median_menit`, bukan `avg_menit`** — rata-rata bisa terseret outlier balasan historis yang masuk via `/api/crawl` (timestamp = waktu crawl, bukan waktu asli pesan WA). Panduan FE: `docs/panduan-frontend-metrics-solver.md`.
+
+---
+
+### 3.9a `GET /api/metrics/solver-resolution` — Resolution time solver (v1.34)
+
+**Headers:** `X-API-Key: <key>`
+
+Pasangan §3.9. Kalau response time mengukur *kecepatan balasan pertama*, resolution time mengukur ***total waktu sampai case selesai***.
+
+| Titik | Sumber |
+|---|---|
+| `t0` | `cases.created_at` — ticket dikirim ke grup solver |
+| `t1` | **Balasan solver TERAKHIR** (`MAX(wa_messages.created_at)`, `from_me=false`) |
+| Syarat | `cases.status = 'done'` |
+
+`resolution_jam = (t1 - t0) / 3600` — satuan **jam** (bukan menit).
+
+**Kenapa balasan terakhir, bukan timestamp update manual:** alur nyata — solver membalas *"bisa dicek lagi rekan"* (tanpa keyword done → status tetap `in_progress`), lalu admin menutup case dari web. Case itu **ikut dihitung**, titik akhirnya tetap **balasan solver terakhir**. Update manual dari web tidak pernah menulis ke `wa_messages`, jadi `t1` selalu berasal dari solver.
+
+**Case `done` tanpa balasan solver sama sekali** (langsung ditutup dari web) **tidak dihitung** di summary — muncul di `unresolved` dengan `status: "done"` sebagai action item admin.
+
+**Query params:** identik §3.9 (`regional_id`, `solver`, `group_id`, `date_from`, `date_to`). Validasi tanggal → `422`.
+
+**Response `200`:** `{filters, summary, distribution, per_solver, unresolved, cases}`
+
+| Field | Bentuk |
+|---|---|
+| `summary` | `{total_cases, avg_jam, min_jam, max_jam, median_jam}` (null bila kosong) |
+| `distribution` | bucket **jam**: `lt_1h` (<1), `b_1_6h` (1–6), `b_6_24h` (6–24), `gt_24h` (>24). **`[]` bila tidak ada data** |
+| `per_solver` | sama seperti §3.9 tapi satuan jam — dikreditkan ke penulis **balasan terakhir**, sort `median_jam` ascending |
+| `unresolved` | `{count, cases[]}` — case belum `done`, **plus** case `done` tanpa balasan solver |
+| `cases[]` | `{id, case_code, status, group_name, regional_name, kirim_case_at, solver, balasan_terakhir_at, resolution_jam}` |
+
+**Contoh:**
+```bash
+GET /api/metrics/solver-resolution
+GET /api/metrics/solver-resolution?regional_id=7&solver=smops&date_from=2026-09-01&date_to=2026-09-30
+```
+
+> **Satuan berbeda dari §3.9:** response = **menit**, resolution = **jam**. Jangan campur formatter-nya. Pakai `median_jam` untuk menilai kinerja. Panduan FE: `docs/panduan-frontend-metrics-solver-resolution.md`.
+
+---
+
 
 ## 4. Lookup Endpoints
 
@@ -1187,8 +1344,7 @@ GET /api/media/file/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.jpg
 
 ---
 
-## 8. Error
-## 8. Format Error
+## 9. Format Error
 
 FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Validasi body gagal → `422` dengan `detail` berisi array lokasi field. FE cukup menampilkan `detail` apa adanya.
 
@@ -1200,14 +1356,14 @@ FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Valida
 | `429` | Rate limit terlampaui (default 60 req/menit per IP) |
 | `502` | WAHA tidak terjangkau atau session tidak WORKING |
 
-## 9. Spesifikasi Form Dinamis
+## 10. Spesifikasi Form Dinamis
 
 ### Alur Form Input
 1. **Pilih Area** → dropdown `GET /api/areas`
 2. **Pilih Regional** → dropdown `GET /api/areas/{area_id}/regionals` (muncul setelah Area dipilih)
 3. **Pilih Sumber Ticket** → dropdown `GET /api/sumber-tickets` (STC / Grapari / Web IT)
 4. **Asal Grapari** → text input (hanya muncul jika Sumber Ticket = Grapari)
-5. **Pilih Jenis Case** → dropdown `GET /api/jenis-cases` (Non Order / Non AO / Mobile)
+5. **Pilih Jenis Case** → dropdown `GET /api/jenis-cases` (Non Order / Non AO / AO / Mobile)
 6. **Input fields** → dua mode:
    - **Mode Form:** Isi field-field per jenis case (semua opsional)
    - **Mode Textarea:** Copy-paste langsung wording case
@@ -1235,6 +1391,20 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
 | `link_evidence` | Link Evidence | array of {label, url} | ❌ |
+
+#### `AO` — Case Activation Order (pasang baru, v1.31)
+| Key | Label UI | Tipe | Required |
+|---|---|---|---|
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d{9,}`) | ✅ |
+| `order_id` | Order ID | text | ✅ |
+| `no_indihome` | Nomer Indihome | text/tel | ✅ |
+| `last_milestone` | Last Milestone | text | ❌ |
+| `request_case` | Request Case | text | ❌ |
+| `detail_case` | Detail Case | textarea (long text) | ❌ |
+| `link_evidence` | Link Evidence | array of {label, url} | ❌ |
+| `case_id` | Case ID | text | ❌ |
+
+> Format field & required **identik `Non AO`** — yang membedakan hanya header pesan WA (`#..._AO_...`). `case_id` opsional (v1.16) dirender sebagai baris `Case ID : <kode>` tepat setelah Ticket Remedy.
 
 #### `Mobile` — Case Mobile
 | Key | Label UI | Tipe | Required |
@@ -1289,6 +1459,27 @@ Link Evidence :
 <link2>
 ```
 
+**Placeholder AO:**
+```
+punten rekan @<nomor> mohon bantuannya untuk case AO ada 1 case lagi
+
+Area : <nama area>
+Regional : <nama regional>
+Sumber Ticket : <STC/Grapari/Web IT>
+Asal Grapari : <nama GraPARI> (jika sumber Grapari)
+Jenis Case : AO
+
+Ticket Remedy : INC000000000000
+Order ID : <order id>
+Nomer Indihome : 0211234567
+Last Milestone : <last milestone>
+Request Case : <request case>
+Detail Case : <detail case>
+Link Evidence :
+<link1>
+<link2>
+```
+
 **Placeholder Mobile:**
 ```
 punten rekan @<nomor> mohon bantuannya untuk case Mobile ada 1 case lagi
@@ -1312,16 +1503,16 @@ Link Evidence :
 - Multi-select kontak → dikirim sebagai `mentions: [{number, name}]`.
 - Saran: daftar kontak solver di-hardcode di FE dulu (atau tabel config nanti), user tinggal centang.
 
-## 10. Alur Integrasi yang Disarankan
+## 11. Alur Integrasi yang Disarankan
 
 1. **Load lookup data saat init:**
    - `GET /api/areas` → populate dropdown Area
    - `GET /api/sumber-tickets` → populate dropdown Sumber Ticket
-   - `GET /api/jenis-cases` → populate dropdown Jenis Case
+   - `GET /api/jenis-cases` → populate dropdown Jenis Case (Non Order / Non AO / AO / Mobile)
 2. **Dynamic dropdown:**
    - User pilih Area → `GET /api/areas/{id}/regionals` → populate dropdown Regional
    - User pilih Sumber Ticket = Grapari → tampilkan field Asal Grapari
-3. **Form input:** render field per §6 → submit `POST /api/cases` → tampilkan `text` dari response sebagai konfirmasi "pesan terkirim ke grup".
+3. **Form input:** render field per §10 → submit `POST /api/cases` → tampilkan `text` dari response sebagai konfirmasi "pesan terkirim ke grup".
 4. **Dashboard:** `GET /api/cases` (+filter) → tabel dengan badge status & indikator ack. Polling 30 dtk.
 5. **Detail:** klik baris → `GET /api/cases/{id}` → render thread `messages` + sidebar `updates` + chip `participants` dengan nama.
 6. **Aksi:** tombol koreksi status → `POST /api/cases/{id}/status` → refresh detail.
@@ -1340,13 +1531,13 @@ Ditangani oleh:
     ↳ Budi Santoso: done mas, sudah diluruskan    [chain · 10:32] ✅ done
 ```
 
-## 11. Contoh Lengkap: Semua Kombinasi Sumber Ticket × Jenis Case
+## 12. Contoh Lengkap: Semua Kombinasi Sumber Ticket × Jenis Case
 
-Berikut 9 kombinasi lengkap dengan request body, field required, dan format pesan WhatsApp yang dihasilkan.
+Berikut 12 kombinasi lengkap dengan request body, field required, dan format pesan WhatsApp yang dihasilkan.
 
 ---
 
-### 8.1 STC + Non Order
+### 11.1 STC + Non Order
 
 **Request:**
 ```json
@@ -1384,7 +1575,7 @@ https://imgur.com/formorder
 
 ---
 
-### 8.2 STC + Non AO
+### 11.2 STC + Non AO
 
 **Request:**
 ```json
@@ -1427,7 +1618,49 @@ https://imgur.com/screenshot2
 
 ---
 
-### 8.3 STC + Mobile
+### 11.2b STC + AO
+
+**Request:**
+```json
+{
+  "area_id": 1,
+  "regional_id": 1,
+  "sumber_ticket": "STC",
+  "jenis_case": "AO",
+  "fields": {
+    "ticket_remedy": "INC000044444444",
+    "order_id": "MOk4260911023440131b25f61",
+    "no_indihome": "0214444444",
+    "last_milestone": "TSEL_ACTIVATION_FALLOUT",
+    "request_case": "Follow up aktivasi pasang baru",
+    "detail_case": "Order pasang baru stuck di TSEL, mohon dibantu.",
+    "link_evidence": ["https://imgur.com/ao_evidence"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case AO ada 1 case lagi
+
+#AO
+Area : Area 1
+Regional : Sumbagut
+Sumber Ticket : STC
+Jenis Case : AO
+Ticket Remedy : INC000044444444
+Order ID : MOk4260911023440131b25f61
+Nomer Indihome : 0214444444
+Last Milestone : TSEL_ACTIVATION_FALLOUT
+Request Case : Follow up aktivasi pasang baru
+Detail Case : Order pasang baru stuck di TSEL, mohon dibantu.
+Link Evidence :
+https://imgur.com/ao_evidence
+```
+
+---
+
+### 11.3 STC + Mobile
 
 **Request:**
 ```json
@@ -1465,7 +1698,7 @@ https://imgur.com/sinyal
 
 ---
 
-### 8.4 Grapari + Non Order
+### 11.4 Grapari + Non Order
 
 **Request:**
 ```json
@@ -1505,7 +1738,7 @@ https://imgur.com/billing_screenshot
 
 ---
 
-### 8.5 Grapari + Non AO
+### 11.5 Grapari + Non AO
 
 **Request:**
 ```json
@@ -1550,7 +1783,51 @@ https://imgur.com/chat_screenshot
 
 ---
 
-### 8.6 Grapari + Mobile
+### 11.5b Grapari + AO
+
+**Request:**
+```json
+{
+  "area_id": 3,
+  "regional_id": 7,
+  "sumber_ticket": "Grapari",
+  "jenis_case": "AO",
+  "asal_grapari": "GraPARI Surabaya",
+  "fields": {
+    "ticket_remedy": "INC000055555555",
+    "order_id": "MOk4260911023440131b25f62",
+    "no_indihome": "0315555555",
+    "last_milestone": "TSEL_ACTIVATION_FALLOUT",
+    "request_case": "Pasang baru dari GraPARI belum aktif",
+    "detail_case": "Pelanggan daftar di GraPARI, order belum tuntas.",
+    "link_evidence": ["https://imgur.com/grapari_ao"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case AO ada 1 case lagi
+
+#Grapari_AO
+Area : Area 3
+Regional : Regional 7
+Sumber Ticket : Grapari
+Asal Grapari : GraPARI Surabaya
+Jenis Case : AO
+Ticket Remedy : INC000055555555
+Order ID : MOk4260911023440131b25f62
+Nomer Indihome : 0315555555
+Last Milestone : TSEL_ACTIVATION_FALLOUT
+Request Case : Pasang baru dari GraPARI belum aktif
+Detail Case : Pelanggan daftar di GraPARI, order belum tuntas.
+Link Evidence :
+https://imgur.com/grapari_ao
+```
+
+---
+
+### 11.6 Grapari + Mobile
 
 **Request:**
 ```json
@@ -1590,7 +1867,7 @@ https://imgur.com/speedtest
 
 ---
 
-### 8.7 Web IT + Non Order
+### 11.7 Web IT + Non Order
 
 **Request:**
 ```json
@@ -1628,7 +1905,7 @@ https://imgur.com/error_page
 
 ---
 
-### 8.8 Web IT + Non AO
+### 11.8 Web IT + Non AO
 
 **Request:**
 ```json
@@ -1669,7 +1946,49 @@ https://drive.google.com/chat_log
 
 ---
 
-### 8.9 Web IT + Mobile
+### 11.8b Web IT + AO
+
+**Request:**
+```json
+{
+  "area_id": 4,
+  "regional_id": 10,
+  "sumber_ticket": "Web IT",
+  "jenis_case": "AO",
+  "fields": {
+    "ticket_remedy": "INC000066666666",
+    "order_id": "MOk4260911023440131b25f63",
+    "no_indihome": "0216666666",
+    "last_milestone": "TSEL_ACTIVATION_FALLOUT",
+    "request_case": "Order pasang baru via Web IT",
+    "detail_case": "Order dari Web IT belum tereksekusi di TSEL.",
+    "link_evidence": ["https://imgur.com/webit_ao"]
+  }
+}
+```
+
+**Pesan WA:**
+```
+punten rekan @628xxx mohon bantuannya untuk case AO ada 1 case lagi
+
+#Web IT_AO
+Area : Area 4
+Regional : Regional 10
+Sumber Ticket : Web IT
+Jenis Case : AO
+Ticket Remedy : INC000066666666
+Order ID : MOk4260911023440131b25f63
+Nomer Indihome : 0216666666
+Last Milestone : TSEL_ACTIVATION_FALLOUT
+Request Case : Order pasang baru via Web IT
+Detail Case : Order dari Web IT belum tereksekusi di TSEL.
+Link Evidence :
+https://imgur.com/webit_ao
+```
+
+---
+
+### 11.9 Web IT + Mobile
 
 **Request:**
 ```json
@@ -1724,7 +2043,26 @@ https://imgur.com/app_error
 | Web IT | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
-## 12. Changelog
+## 13. Changelog
+
+### v1.34-doc (14 Oktober 2026) — sinkronisasi kontrak dengan backend v1.34.0
+
+Revisi dokumentasi (tanpa perubahan backend) untuk menutup gap antara doc dan kode:
+
+- **§3.8 `GET /health`** — ⚠️ **BREAKING** diperbaiki: response **detail** (§3.8, v1.33) menggantikan bentuk flat `{"status","db","waha"}`. `db` & `waha` kini objek; `waha.sessions[]` array. Endpoint tetap HTTP 200 walau `degraded` → FE harus baca `body.status`.
+- **§3.8a `POST /api/health/alert`** — section baru (v1.33, cron Telegram).
+- **§3.9 `GET /api/metrics/solver-response`** — section baru (v1.32, satuan **menit**).
+- **§3.9a `GET /api/metrics/solver-resolution`** — section baru (v1.34, satuan **jam**).
+- **§2 Jenis Case** — tambah **`AO`** (v1.31); catat resolve case-insensitive & downgrade `Non Order`.
+- **§2 Status Case** — tandai **`issue` historis saja** (v1.29+; set manual → `422`, filter masih jalan).
+- **§10 Form Dinamis** — tambah blok field `AO`, placeholder textarea `AO`, dropdown include `AO`.
+- **§12 Contoh Lengkap** — 9 → **12 kombinasi** (3 contoh AO: STC/Grapari/Web IT); heading dirapikan ke `§12.x`.
+- **§3.3/§3.3b** — `case_type` filter menyebut nilai enum lengkap termasuk `AO`.
+- **§1 Gambaran Umum** — daftar endpoint tanpa auth dilengkapi (`/api/media/file/*`, `/api/media/proxy`); deskripsi media dikoreksi (disimpan di Docker volume, bukan DB).
+- **Heading structure** — duplikasi `## 8.` (Media Serving + Error) & `## 8. Format Error` diperbaiki → §9 Format Error, §10 Form, §11 Alur Integrasi, §12 Contoh, §13 Changelog.
+- **§13 Changelog** — entri v1.23 (notif grup test) dipisah keluar dari blok v1.24 yang tercampur.
+
+> Referensi header: `Versi: 1.34` ↔ `main-v1-1.py` `version="1.34.0"`.
 
 ### v1.34 (9 Oktober 2026) — metrik resolution time solver
 Endpoint baru **`GET /api/metrics/solver-resolution`** (tag: System) — pasangan `solver-response` (v1.32). Kalau response time mengukur *seberapa cepat solver pertama membalas*, resolution time mengukur ***berapa lama total sampai case selesai***.
@@ -1870,6 +2208,8 @@ Catatan migrasi data: case yang dibuat sebelum rilis ini punya `updated_at` lama
 
 ### v1.24 (23 September 2026) — search `q` ikut menyisir fields
 Peningkatan search di **`GET /api/cases`** dan **`GET /api/cases/export.xlsx`** (shared SQL builder): `q` sekarang mencari di `case_code`, `title`, **dan seluruh isi `fields`** (no_indihome, order_id, case_id, msisdn, link evidence, dll). Contoh: `?q=141410121054` menemukan case dengan Nomor IndiHome tersebut walau tidak ada di judul/kode. Tidak ada param/response baru — FE tidak perlu perubahan apa pun. Catatan: karena menyisir seluruh fields (termasuk URL evidence), match bisa lebih banyak dari sebelumnya (mis. `q=youtube` menemukan case dengan link evidence YouTube).
+
+### v1.23 (23 September 2026) — notif "Update Case" ke grup test
 Fitur webhook internal (tanpa endpoint baru): setiap balasan solver yang ter-link ke case (via reply/chain/rule — semua jenis balasan, termasuk yang mengubah status jadi done) otomatis memicu notifikasi ke **grup default (test)**. Format pesan satu blok:
 
 ```

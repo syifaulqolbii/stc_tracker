@@ -1,4 +1,4 @@
-"""Template rendering for Moban FU Case Tracker v1.2.
+"""Template rendering for IT Tracker v1.2.
 
 Each jenis_case has a specific layout of fields that get rendered
 into a WhatsApp-friendly text format.

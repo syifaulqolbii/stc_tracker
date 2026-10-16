@@ -1,4 +1,4 @@
--- Moban FU Case Tracker v1.2 — Area, Regional, Sumber Ticket, Jenis Case
+-- IT Tracker v1.2 — Area, Regional, Sumber Ticket, Jenis Case
 -- Jalankan di Supabase SQL Editor atau: psql $DATABASE_URL -f schema-v1-2.sql
 
 -- ============================================================

@@ -1,4 +1,4 @@
-"""Integration tests for Moban FU Tracker API endpoints.
+"""Integration tests for IT Tracker API endpoints.
 
 These tests mock the database and WAHA to allow testing without running services.
 Updated for v1.2: new case types, new fields, new lookup endpoints.

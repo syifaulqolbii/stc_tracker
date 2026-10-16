@@ -2,7 +2,7 @@
 
 ## 1. Ringkasan
 
-Tambahkan monitoring proaktif untuk service backend Moban FU Case Tracker: cron di VM
+Tambahkan monitoring proaktif untuk service backend IT Tracker: cron di VM
 memanggil endpoint baru `POST /api/health/alert` setiap 5 menit; endpoint memeriksa
 kesehatan detail seluruh service (DB, WAHA HTTP, dan **status tiap session WAHA**),
 lalu mengirim alert ke **grup Telegram** saat ada service turun, mengirim ulang setiap

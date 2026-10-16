@@ -1,4 +1,4 @@
--- Moban FU Case Tracker v1.1 — single group + reply-chain tracking
+-- IT Tracker v1.1 — single group + reply-chain tracking
 -- Jalankan di Supabase SQL Editor atau: psql $DATABASE_URL -f schema.sql
 
 CREATE TABLE IF NOT EXISTS cases (

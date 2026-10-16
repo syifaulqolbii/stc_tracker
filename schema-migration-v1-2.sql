@@ -1,4 +1,4 @@
--- Moban FU Case Tracker v1.2 — Migration from v1.1
+-- IT Tracker v1.2 — Migration from v1.1
 -- Run: psql $DATABASE_URL -f schema-migration-v1-2.sql
 -- This script is safe to run multiple times (IF NOT EXISTS)
 

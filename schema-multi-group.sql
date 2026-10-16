@@ -1,4 +1,4 @@
--- Moban FU Case Tracker — Multi-Group Support
+-- IT Tracker — Multi-Group Support
 -- Adds wa_groups lookup table + cases.group_id column
 -- Run: psql $DATABASE_URL -f schema-multi-group.sql
 -- Safe to run multiple times (IF NOT EXISTS / IF NOT EXISTS)

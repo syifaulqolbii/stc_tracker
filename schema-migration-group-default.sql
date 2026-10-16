@@ -1,4 +1,4 @@
--- Moban FU Case Tracker — Default Group (grup test development)
+-- IT Tracker — Default Group (grup test development)
 -- Adds wa_groups.is_default: grup fallback saat POST /api/cases tanpa group_id.
 -- Grup default TIDAK muncul di GET /api/groups (switcher) kecuali ?include_default=true,
 -- tapi tetap aktif di-track oleh webhook/crawl/reminder karena barisnya ada di wa_groups.

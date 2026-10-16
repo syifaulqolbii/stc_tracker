@@ -1,4 +1,4 @@
--- Moban FU Case Tracker v1.2 — Seed Data
+-- IT Tracker v1.2 — Seed Data
 -- Run: psql $DATABASE_URL -f seed-v1-2.sql
 -- Only seeds lookup tables. Area & Regional data dikasih nanti oleh user.
 

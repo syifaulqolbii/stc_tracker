@@ -1,5 +1,5 @@
 [Unit]
-Description=Moban FU Case Tracker Backend
+Description=IT Tracker Backend
 After=network.target postgresql.service
 Wants=postgresql.service
 

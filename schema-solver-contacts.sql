@@ -1,4 +1,4 @@
--- Moban FU Case Tracker — Solver Contacts CRUD
+-- IT Tracker — Solver Contacts CRUD
 -- Run: psql $DATABASE_URL -f schema-solver-contacts.sql
 
 CREATE TABLE IF NOT EXISTS solver_contacts (

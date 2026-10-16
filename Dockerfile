@@ -1,4 +1,4 @@
-# Moban FU Case Tracker — Dockerfile
+# IT Tracker — Dockerfile
 # Multi-stage build for smaller production image
 
 # Stage 1: Build dependencies

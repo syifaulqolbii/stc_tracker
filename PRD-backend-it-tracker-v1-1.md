@@ -1,4 +1,12 @@
-# PRD — Backend Moban FU Case Tracker
+# PRD — Backend IT Tracker
+
+> ⛔ **SUPERSEDED — jangan dipakai sebagai acuan.**
+> Dokumen ini ditulis 7 September 2026 (basis kode v1.10/v1.16) dan **tidak lagi akurat**:
+> enum jenis case masih `stc/smooa/mobile/ufo`, belum ada pagination, export Excel, filter tanggal,
+> pencarian `fields`, reminder multi-grup, balas solver dari web, metrik response/resolution,
+> health detail, maupun alert Telegram.
+> **Acuan saat ini:** `PRD-it-tracker-v2.md` (v2.0, 16 Okt 2026) + `API-contract-frontend.md` v1.34.
+> Dokumen ini disimpan hanya untuk jejak historis keputusan (arsitektur awal, chain traversal, waterfall matching).
 
 **Versi:** 1.5 (supersedes v1.1) · **Tanggal:** 7 September 2026 · **Owner:** Backend
 **Stack:** FastAPI (Python) · Supabase (PostgreSQL) · WAHA (WhatsApp HTTP API) · OpenRouter (LLM fallback)

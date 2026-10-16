@@ -1,4 +1,4 @@
--- Migration: Reminder feature for Moban FU Case Tracker
+-- Migration: Reminder feature for IT Tracker
 -- Adds mentions storage, reminder tracking, and reminder log
 
 -- Simpan mentions saat case dibuat (JSONB array of {number, name})

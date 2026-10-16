@@ -1,4 +1,4 @@
-# Runbook Verifikasi Produksi — Moban FU Case Tracker (v1.10)
+# Runbook Verifikasi Produksi — IT Tracker (v1.10)
 
 > **Mode:** Interaktif — user jalankan perintah di VPS, agent menilai output & melacak status.
 > **Regla:** Backup dulu, semua perintah read-only atau aman, `POST /api/cases` mengirim WA asli (pakai grup default/test).

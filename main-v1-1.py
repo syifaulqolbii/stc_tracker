@@ -1,4 +1,4 @@
-"""Moban FU Case Tracker v1.10 — multi-group + grup default fallback, reply-chain traversal.
+"""IT Tracker v1.34 — multi-group + grup default fallback, reply-chain traversal.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
@@ -197,9 +197,9 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Moban FU Tracker",
+    title="IT Tracker",
     description=(
-        "Backend API untuk Moban FU Case Tracker v1.10. "
+        "Backend API untuk IT Tracker v1.34. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
         "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
