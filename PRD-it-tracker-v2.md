@@ -443,6 +443,8 @@ flowchart LR
 ## 9. Spesifikasi API (ringkas)
 
 > Detail per-endpoint lengkap (contoh request/response, tabel error) ada di `API-contract-frontend.md` v1.34. Bagian ini peta ringkas + aturan yang **wajib** dipatuhi FE. Base URL prod: `https://api.stc.syfa.site`; base path `/api`; format JSON.
+>
+> ⚠️ **`API-contract-frontend.md` masih punya cacat yang belum dibetulkan — bila dokumen itu dan §9 ini berbeda, ikuti §9 ini.** Daftar cacat (audit 16 Okt 2026): contoh response `GET /api/cases/{id}/reminder` tertukar dengan `POST /api/reminders/run`; blok `Response 200` kosong pada contract §5.1, contract §7.1, contract §7.4; heading contract §5.4 menggabungkan `PUT` dan `DELETE` sehingga `DELETE /api/solver-contacts/{id}` tidak terdokumentasi; kontradiksi status grup nonaktif (`404` di satu tempat, `409` di tempat lain — yang benar: tak dikenal `422`, nonaktif `409`); contoh `GET /api/jenis-cases` belum memuat `AO`; klaim field wajib per jenis case tidak ditegakkan backend (T1); nomor seksi melompat (7.1→7.2→7.4) dan sub-heading contract §12 memakai penomoran 11.x. Lihat §13.1 untuk daftar pembetulan.
 
 ### 9.1 Ringkasan endpoint
 
@@ -983,9 +985,26 @@ Diurutkan berdasarkan risiko. Semua diverifikasi langsung di kode/suite test.
 | **T16** | `GET /api/cases/{id}/reminder` tidak menyaring `deleted_at`; `set_status` juga tidak | `main-v1-1.py:1799-1801`, `2193-2205` | Case terhapus masih bisa diubah statusnya/dibaca riwayatnya via API | Tambahkan `deleted_at IS NULL` |
 | **T17** | Cache kontak tanpa TTL + placeholder `None` | `main-v1-1.py:367`, `:457` | Nama kontak baru tidak ikut ter-cache sampai restart; LID tak dikenal memicu HTTP tiap pesan | Tambah TTL/refresh berkala, jangan simpan `None` |
 | **T18** | `POST /api/crawl` tidak membatasi `limit` maksimum | `main-v1-1.py:3040` | Nilai besar bisa membebani WAHA/DB | Batasi (mis. ≤500) |
-| **T19** | **Nama produk masih "Moban"** di banyak tempat meski nama baru = **IT Tracker** | `main-v1-1.py:1,56,200`; `Dockerfile:1,32,41,43`; `nginx.conf:2,37,45`; `run.sh:2,18`; `docker-compose.yml`; `docker-compose.prod.yml:1`; `.env.example:1`; `moban-tracker.service:1-5`; `scripts/*.sh`; 11 header `schema-*.sql`; `docs/production-runbook.md` (26×); `templates.py:1` | Nama lama muncul di Swagger, log, nama container/service systemd, dan DB | Lihat checklist §15.4 — sebagian hanya teks, sebagian **breaking** (nama DB & nama network) |
+| **T19** | **Sisa nama produk "Moban"** (teks/display sudah di-rename ke IT Tracker; identitas infrastruktur belum) | Belum: `main-v1-1.py:56,69`; `Dockerfile:32,41,43`; `nginx.conf:2,37,45`; `docker-compose.yml`; `.env.example:5`; `moban-tracker.service` (nama file); `scripts/*.sh`; `reports/*.sql` | Nama lama masih muncul di Swagger **log**, nama container/service systemd, network, dan DB | Lihat checklist §15.4 — grup A **sudah selesai**, grup B (container/network/DB/user) menunggu maintenance |
 
-> **Catatan:** dokumen `API-contract-frontend.md` (repo ini, belum di-commit) sudah selaras dengan kode v1.34. `PRD-backend-it-tracker-v1-1.md` **tidak** selaras (enum jenis case lama, tanpa pagination/export/metrik/health-detail) → jangan dipakai sebagai acuan.
+> **Catatan:** `API-contract-frontend.md` sudah selaras dengan kode v1.34 pada sisi **versi/endpoint**, tetapi punya cacat isi & struktur yang harus dibetulkan — lihat §13.1. `PRD-backend-it-tracker-v1-1.md` **tidak** selaras (enum jenis case lama, tanpa pagination/export/metrik/health-detail) → jangan dipakai sebagai acuan.
+
+### 13.1 Pembetulan yang diperlukan pada `API-contract-frontend.md`
+
+Cacat isi (bukan kosmetik) — hasil audit 16 Okt 2026. **Prioritas: C1 dan C3 bisa menyesatkan implementasi FE.**
+
+| # | Lokasi | Masalah | Perbaikan |
+|---|---|---|---|
+| CC1 | contract §7.2 (baris 1255-1266) | Contoh response `{checked, reminded, cases[]}` ditulis pada **riwayat reminder case** (`GET /api/cases/{id}/reminder`); itu milik `POST /api/reminders/run` | Ganti contoh dengan array `reminder_log`; pindahkan contoh `{checked, reminded}` ke contract §7.3 (`POST /api/reminders/run` yang saat ini hilang) |
+| CC2 | contract §5.1, contract §7.1, contract §7.4 | Blok `**Response 200:**` **kosong** | Isi: contract §5.1 → array kontak; contract §7.1 → `{ok, reminder_count, wa_message_id, message}`; contract §7.4 → array case + `idle_hours` |
+| CC3 | contract §5.4 (baris 1096-1101) | Heading rusak: `PUT …{id\}json {…} — Soft delete kontak` — `PUT` dan `DELETE` digabung, **`DELETE /api/solver-contacts/{id}` tak terdokumentasi** | Pisah jadi contract §5.4 `PUT` (update parsial, contoh body `{name, role}`) dan contract §5.5 `DELETE` (soft delete → `{ok:true}`) |
+| CC4 | baris 228 vs 293 | `group_id` tidak valid → `404` (baris 228) vs `409` (baris 293) | Samakan: tak dikenal → **`422`**; terdaftar tapi nonaktif → **`409`** |
+| CC5 | contract §4.4 (baris 1040-1044) | Contoh `GET /api/jenis-cases` belum memuat `AO` | Tambahkan `{ "id": 4, "name": "AO" }` — sekaligus **perbaiki seed DB** (contract §13 T3) |
+| CC6 | baris 229 | Klaim field wajib per jenis case — backend tidak menegakkannya | Tandai sebagai "disarankan di UI, tidak divalidasi server" sampai T1 dikerjakan |
+| CC7 | baris 4 | "Referensi: PRD v1.5" (superseded) | Ganti ke `PRD-it-tracker-v2.md` |
+| CC8 | baris 1088, 1240, 1255 | Escaping `{id\}` pada heading + fence ` ``` ` hilang (baris 1258) | Bersihkan escaping dan tutup fence |
+| CC9 | contract §7 | Nomor melompat 7.1 → 7.2 → **7.4** (7.3 tidak ada) | Tambahkan contract §7.3 `POST /api/reminders/run` (dokumentasi lengkap; saat ini hanya muncul sebagai contoh crontab) |
+| CC10 | contract §12 (baris 1534) + sub-heading baris 1540-1991 | Section 12 tapi anak-anaknya bernomor 11.1–11.9 | Renomori menjadi 12.1–12.12 |
 
 ---
 
