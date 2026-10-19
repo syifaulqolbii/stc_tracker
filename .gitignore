@@ -43,3 +43,7 @@ backups/
 # SDD / git worktrees (isolated workspaces, never commit contents)
 .worktrees/
 .superpowers/
+
+# Scratch / probe artifacts (local only)
+.qwen/
+temp/
