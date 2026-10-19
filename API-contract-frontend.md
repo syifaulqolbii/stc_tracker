@@ -419,6 +419,77 @@ async function exportExcel(filters) {
 
 ---
 
+### 3.3c `GET /api/cases/export.json` — Export timeline semua case ke JSON (v1.35)
+
+**Headers:**
+```
+X-API-Key: <key>
+```
+
+**Query params:** **identik dengan §3.3b** (`status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`, `date_from`/`date_to`) — **tanpa** `page`/`limit`. Memakai SQL builder filter yang sama dengan list & export Excel, jadi isi export **dijamin konsisten** dengan dashboard.
+
+**Response `200`:** satu file JSON
+```
+Content-Type: application/json
+Content-Disposition: attachment; filename="cases_export_20261019-0838.json"
+```
+
+**Struktur:**
+```json
+{
+  "exported_at": "2026-10-19T08:38:28.841968+00:00",
+  "total_cases": 2,
+  "cases": [
+    {
+      "case": { "id": 1, "case_code": "INC000000001", "fields": {"order_id": "ORDER-1"},
+                "group_name": "Grup A", "area_name": null, "regional_name": null,
+                "sumber_ticket_name": null, "jenis_case_name": null,
+                "created_at": "2026-09-21T08:30:00", "updated_at": "2026-09-21T09:00:00", "...": "..." },
+      "messages": [
+        { "wa_message_id": "w1", "quoted_id": null, "author": "628111@c.us", "author_name": "Budi",
+          "body": "halo", "from_me": false, "media_url": null, "media_type": null,
+          "created_at": "2026-09-21T08:31:00" }
+      ],
+      "updates": [
+        { "id": 10, "note": "diproses", "created_at": "2026-09-21T08:40:00", "...": "..." }
+      ],
+      "participants": [ { "author": "628111@c.us", "name": "Budi" } ]
+    }
+  ]
+}
+```
+
+| Field | Isi |
+|---|---|
+| `exported_at` | waktu export (UTC, ISO 8601) |
+| `total_cases` | jumlah elemen `cases` |
+| `cases[].case` | objek **sama persis** dengan `case` di §3.4 (seluruh kolom `cases` termasuk `fields`, `message_text`, `mentions`, `reminder_count` + alias join `group_name`, `area_name`, `regional_name`, `sumber_ticket_name`, `jenis_case_name`) |
+| `cases[].messages` | timeline pesan, field sama dengan §3.4, urut `created_at` ASC, **tanpa** `case_id` |
+| `cases[].updates` | progress updates (`SELECT *` dari `progress_updates`), urut `created_at` ASC, **tanpa** `case_id` |
+| `cases[].participants` | author unik yang **bukan** `from_me`, urutan kemunculan pertama, `{author, name}` |
+
+Urutan case: `updated_at DESC`. Semua `datetime`/`timestamptz` di-encode sebagai string ISO 8601; `fields` (JSONB) tetap object/array.
+
+**Error:** `401` tanpa/da key salah · `422` filter tidak valid (termasuk tanggal). 0 case lolos filter → tetap `200` dengan `{"exported_at": ..., "total_cases": 0, "cases": []}` (query timeline tidak dijalankan).
+
+**Contoh integrasi FE:**
+```js
+async function exportTimelineJSON(filters) {
+  const qs = new URLSearchParams(filters).toString();
+  const resp = await fetch(`/api/cases/export.json?${qs}`, { headers: { "X-API-Key": API_KEY } });
+  if (!resp.ok) throw await getErrMsg(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), {
+    href: url, download: `cases_timeline_${new Date().toISOString().slice(0, 10)}.json`,
+  });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+```
+
+---
+
 ### 3.4 `GET /api/cases/{id}` — Detail + timeline rantai
 
 **Headers:**
@@ -2044,6 +2115,16 @@ https://imgur.com/app_error
 | Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
 
 ## 13. Changelog
+
+### v1.35 (19 Oktober 2026) — export timeline semua case ke satu file JSON
+
+Endpoint baru **`GET /api/cases/export.json`** (§3.3c): download **satu file JSON** berisi detail + timeline **SEMUA case** yang lolos filter — tanpa perlu memanggil `GET /api/cases/{id}` satu per satu.
+
+- **Filter identik** `GET /api/cases` / `export.xlsx` (`status`, `case_type`, `area_id`, `regional_id`, `sumber_ticket`, `group_id`, `q`, `include_deleted`, `date_from`/`date_to`), tanpa pagination. Shared SQL builder `_cases_filter_sql` kini menerima `select_list` (keyword-only) supaya export JSON bisa memakai `c.*` + alias join tanpa menduplikasi WHERE.
+- **Isi:** `{exported_at, total_cases, cases[]}`; tiap elemen `{case, messages, updates, participants}` dengan bentuk objek `case`/`messages`/`updates`/`participants` **sama persis** dengan §3.4 (bedanya `messages`/`updates` tanpa `case_id`). Urutan case `updated_at DESC`, timeline `created_at` ASC. `datetime` → string ISO 8601.
+- **Efisiensi:** 3 query total (case + messages `= ANY(ids)` + updates `= ANY(ids)`), bukan N+1.
+- **Response:** `Content-Type: application/json`, `Content-Disposition: attachment; filename="cases_export_YYYYMMDD-HHMM.json"` (UTC). 0 case → `200` dengan `cases: []`.
+- Kode: `main-v1-1.py` — `_CASE_DETAIL_COLUMNS`, `export_cases_json`, import `jsonable_encoder`/`JSONResponse`. Test: `TestCaseTimelineExport` di `tests/test_api.py`.
 
 ### v1.34-doc (14 Oktober 2026) — sinkronisasi kontrak dengan backend v1.34.0
 

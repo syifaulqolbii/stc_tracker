@@ -2665,6 +2665,123 @@ class TestCaseExport:
             assert resp.status_code == 401
 
 
+# ===================== Export timeline JSON (v1.35) =====================
+
+class TestCaseTimelineExport:
+    """GET /api/cases/export.json — timeline semua case dalam satu file."""
+
+    def _rows(self):
+        """Tiga fetchall berurutan: case rows, message rows, progress update rows."""
+        cases = [
+            {"id": 1, "case_code": "INC000000001", "title": "Case pertama", "status": "open",
+             "group_name": "Grup A", "fields": {"order_id": "ORDER-1"},
+             "created_at": datetime(2026, 9, 21, 8, 30),
+             "updated_at": datetime(2026, 9, 21, 9, 0)},
+            {"id": 2, "case_code": "1-SO9BLGS", "title": "Case kedua", "status": "in_progress",
+             "group_name": None, "fields": None,
+             "created_at": datetime(2026, 9, 20, 8, 0),
+             "updated_at": datetime(2026, 9, 20, 9, 0)},
+        ]
+        messages = [
+            {"case_id": 1, "wa_message_id": "w1", "quoted_id": None, "author": "628111@c.us",
+             "author_name": "Budi", "body": "halo", "from_me": False,
+             "media_url": None, "media_type": None, "created_at": datetime(2026, 9, 21, 8, 31)},
+            {"case_id": 1, "wa_message_id": "w2", "quoted_id": None, "author": "bot",
+             "author_name": "Bot", "body": "tiket dibuat", "from_me": True,
+             "media_url": None, "media_type": None, "created_at": datetime(2026, 9, 21, 8, 32)},
+            {"case_id": 1, "wa_message_id": "w3", "quoted_id": "w2", "author": "628111@c.us",
+             "author_name": "Budi", "body": "terima kasih", "from_me": False,
+             "media_url": None, "media_type": None, "created_at": datetime(2026, 9, 21, 8, 33)},
+            {"case_id": 2, "wa_message_id": "w4", "quoted_id": None, "author": "628222@c.us",
+             "author_name": "Sari", "body": "cek dulu", "from_me": False,
+             "media_url": None, "media_type": None, "created_at": datetime(2026, 9, 20, 8, 5)},
+        ]
+        updates = [
+            {"id": 10, "case_id": 1, "note": "diproses", "created_at": datetime(2026, 9, 21, 8, 40)},
+        ]
+        return cases, messages, updates
+
+    def _export(self, tc, mock_cursor, query=""):
+        cases, messages, updates = self._rows()
+        mock_cursor.fetchall.side_effect = [cases, messages, updates]
+        return tc.get(f"/api/cases/export.json{query}")
+
+    def test_returns_json_attachment(self, client):
+        tc, mock_cursor = client
+        resp = self._export(tc, mock_cursor)
+        assert resp.status_code == 200
+        assert "application/json" in resp.headers["content-type"]
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith('attachment; filename="cases_export_')
+        assert disposition.endswith('.json"')
+
+    def test_groups_messages_and_updates_per_case(self, client):
+        tc, mock_cursor = client
+        data = self._export(tc, mock_cursor).json()
+
+        assert data["total_cases"] == 2
+        first, second = data["cases"]
+
+        # objek case: kolom c.* + alias join ikut terbawa
+        assert first["case"]["id"] == 1
+        assert first["case"]["case_code"] == "INC000000001"
+        assert first["case"]["group_name"] == "Grup A"
+        assert first["case"]["fields"] == {"order_id": "ORDER-1"}
+        assert second["case"]["id"] == 2
+
+        # timeline terkelompok per case, urut created_at, tanpa case_id
+        assert [m["wa_message_id"] for m in first["messages"]] == ["w1", "w2", "w3"]
+        assert [m["wa_message_id"] for m in second["messages"]] == ["w4"]
+        assert all("case_id" not in m for m in first["messages"] + second["messages"])
+
+        assert len(first["updates"]) == 1
+        assert first["updates"][0]["note"] == "diproses"
+        assert "case_id" not in first["updates"][0]
+        assert second["updates"] == []
+
+        # participants: author unik, urutan kemunculan pertama, from_me dikecualikan
+        assert first["participants"] == [{"author": "628111@c.us", "name": "Budi"}]
+        assert second["participants"] == [{"author": "628222@c.us", "name": "Sari"}]
+
+        # datetime di-encode jadi string ISO, bukan objek datetime
+        assert isinstance(first["case"]["created_at"], str)
+        assert first["case"]["created_at"].startswith("2026-09-21T08:30")
+        assert isinstance(first["messages"][0]["created_at"], str)
+        assert isinstance(first["updates"][0]["created_at"], str)
+        assert isinstance(data["exported_at"], str)
+
+    def test_zero_cases_returns_empty_export(self, client):
+        tc, mock_cursor = client
+        mock_cursor.fetchall.side_effect = [[]]
+        resp = tc.get("/api/cases/export.json")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cases"] == []
+        assert data["total_cases"] == 0
+        # query timeline tidak dijalankan saat tidak ada case
+        assert mock_cursor.execute.call_count == 1
+
+    def test_filters_are_passed_to_sql(self, client):
+        tc, mock_cursor = client
+        self._export(tc, mock_cursor, query="?status=open&group_id=2&q=INC")
+        sql, args = mock_cursor.execute.call_args_list[0][0][:2]
+        assert "SELECT c.*," in sql  # export JSON pakai SELECT-list detail
+        assert "c.status = %s" in sql
+        assert "c.group_id = %s" in sql
+        assert "ILIKE" in sql
+        assert "c.reminder_count" not in sql  # kolom khusus xlsx tidak ikut
+        assert args[0] is False
+        assert "open" in args and 2 in args and "%INC%" in args
+
+    def test_requires_api_key(self):
+        mock_conn, mock_cursor = _make_mock_db()
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "BACKEND_API_KEY", "secret123"):
+            tc = TestClient(main_module.app)
+            resp = tc.get("/api/cases/export.json")
+            assert resp.status_code == 401
+
+
 # ===================== Filter date range (v1.22) =====================
 
 class TestCaseDateRange:

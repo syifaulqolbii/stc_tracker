@@ -1,4 +1,4 @@
-"""IT Tracker v1.34 — multi-group + grup default fallback, reply-chain traversal.
+"""IT Tracker v1.35 — export timeline semua case ke satu file JSON.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
@@ -11,6 +11,8 @@ param is_active diganti include_inactive) + error group_id lebih jelas (422/409)
 Perubahan v1.11: hardening keamanan — webhook secret (WAHA_WEBHOOK_SECRET), anti-SSRF
 media proxy (host harus tepat WAHA_URL), soft-delete dihormati webhook/reminder,
 rate limit login access-code, port app bind 127.0.0.1.
+Perubahan v1.35: GET /api/cases/export.json — detail + timeline (messages, updates,
+participants) SEMUA case dalam satu file unduhan, filter identik list/export Excel.
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -36,6 +38,8 @@ import httpx
 import psycopg
 import psycopg_pool
 from fastapi import FastAPI, Query, Request, Response, HTTPException, Depends
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from starlette.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -199,13 +203,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IT Tracker",
     description=(
-        "Backend API untuk IT Tracker v1.34. "
+        "Backend API untuk IT Tracker v1.35. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
         "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.34.0",
+    version="1.35.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1528,11 +1532,20 @@ async def test_send_case(inp: TestSendIn,
             "wa_message_id": wa_mid, "text": text}
 
 
-# Filter SQL list cases — dipakai bersama GET /api/cases dan GET /api/cases/export.xlsx
-# supaya filter UI list dan hasil export DIJAMIN identik (v1.21).
+# Filter SQL list cases — dipakai bersama GET /api/cases, GET /api/cases/export.xlsx,
+# dan GET /api/cases/export.json supaya filter UI list dan hasil export DIJAMIN
+# identik (v1.21).
+#
+# SELECT-list alternatif untuk export JSON: seluruh kolom case (c.*) + alias join,
+# bentuk objek `case` sama persis dengan GET /api/cases/{case_id}.
+_CASE_DETAIL_COLUMNS = """c.*, g.name AS group_name, a.name AS area_name, r.name AS regional_name,
+                          st.name AS sumber_ticket_name, jc.name AS jenis_case_name"""
+
+
 def _cases_filter_sql(status, case_type, area_id, regional_id,
                       sumber_ticket, group_id, q, include_deleted,
-                      date_from=None, date_to=None) -> tuple[str, list]:
+                      date_from=None, date_to=None, *,
+                      select_list: str | None = None) -> tuple[str, list]:
     # Validasi format tanggal SEBELUM SQL dibangun (v1.22): YYYY-MM-DD, inklusif.
     if date_from:
         try:
@@ -1549,13 +1562,14 @@ def _cases_filter_sql(status, case_type, area_id, regional_id,
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=422, detail="date_from tidak boleh setelah date_to")
 
-    sql = """SELECT c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
+    columns = select_list or """c.id, c.case_code, c.case_type, c.title, c.status, c.ack,
                     c.created_at, c.updated_at,
                     c.area_id, c.regional_id, c.sumber_ticket_id, c.jenis_case_id, c.asal_grapari,
                     c.fields->>'no_indihome' AS no_indihome,
                     c.group_id, g.name AS group_name,
                     a.name AS area_name, r.name AS regional_name,
-                    st.name AS sumber_ticket_name, jc.name AS jenis_case_name
+                    st.name AS sumber_ticket_name, jc.name AS jenis_case_name"""
+    sql = f"""SELECT {columns}
              FROM cases c
              LEFT JOIN wa_groups g ON c.group_id = g.id
              LEFT JOIN areas a ON c.area_id = a.id
@@ -1698,6 +1712,78 @@ def _coerce_cell(v):
     if isinstance(v, (int, float, bool, str)):
         return v
     return str(v)
+
+
+@app.get("/api/cases/export.json", tags=["Cases"],
+         summary="Export timeline semua case ke JSON",
+         description="Download satu file JSON berisi detail + timeline (messages, progress updates, participants) "
+                     "untuk SEMUA case yang lolos filter. Filter identik dengan GET /api/cases/export.xlsx: "
+                     "status, case_type, area_id, regional_id, sumber_ticket, group_id, q, include_deleted, "
+                     "date_from, date_to. Tanpa pagination.")
+def export_cases_json(
+    request: Request,
+    status: str | None = Query(None, description="Filter status: open, in_progress, done, issue"),
+    case_type: str | None = Query(None, description="Filter jenis case: Non Order, Non AO, AO, Mobile"),
+    area_id: int | None = Query(None, description="Filter berdasarkan Area ID"),
+    regional_id: int | None = Query(None, description="Filter berdasarkan Regional ID"),
+    sumber_ticket: str | None = Query(None, description="Filter sumber ticket: STC, Grapari, Web IT"),
+    group_id: int | None = Query(None, description="Filter berdasarkan grup WA"),
+    q: str | None = Query(None, description="Pencarian substring di case_code, title, dan fields"),
+    include_deleted: bool = Query(False, description="Sertakan case yang sudah di-delete"),
+    date_from: str | None = Query(None, description="Filter created_at mulai tanggal ini (inklusif, YYYY-MM-DD)"),
+    date_to: str | None = Query(None, description="Filter created_at sampai tanggal ini (inklusif, YYYY-MM-DD)"),
+    _auth: str = Depends(verify_api_key),
+    _rate: None = Depends(check_rate_limit),
+):
+    sql, args = _cases_filter_sql(status, case_type, area_id, regional_id,
+                                  sumber_ticket, group_id, q, include_deleted,
+                                  date_from, date_to, select_list=_CASE_DETAIL_COLUMNS)
+    sql += " ORDER BY c.updated_at DESC"
+
+    messages_by_case: dict[int, list] = {}
+    updates_by_case: dict[int, list] = {}
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, args)
+        case_rows = cur.fetchall()
+        ids = [r["id"] for r in case_rows]
+        if ids:
+            # Timeline diambil sekali untuk SEMUA case sekaligus (bukan N+1 query).
+            cur.execute(
+                """SELECT case_id, wa_message_id, quoted_id, author, author_name, body, from_me,
+                          media_url, media_type, created_at
+                   FROM wa_messages WHERE case_id = ANY(%s::int[])
+                   ORDER BY case_id, created_at""",
+                (ids,),
+            )
+            for m in cur.fetchall():
+                messages_by_case.setdefault(m.pop("case_id"), []).append(m)
+            cur.execute(
+                """SELECT * FROM progress_updates WHERE case_id = ANY(%s::int[])
+                   ORDER BY case_id, created_at""",
+                (ids,),
+            )
+            for u in cur.fetchall():
+                updates_by_case.setdefault(u.pop("case_id"), []).append(u)
+
+    cases = []
+    for c in case_rows:
+        msgs = messages_by_case.get(c["id"], [])
+        seen = set()
+        participants = []
+        for m in msgs:
+            if m["author"] and not m["from_me"] and m["author"] not in seen:
+                seen.add(m["author"])
+                participants.append({"author": m["author"], "name": m.get("author_name")})
+        cases.append({"case": c, "messages": msgs,
+                      "updates": updates_by_case.get(c["id"], []),
+                      "participants": participants})
+
+    payload = {"exported_at": datetime.now(timezone.utc).isoformat(),
+               "total_cases": len(cases),
+               "cases": cases}
+    fname = f"cases_export_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.json"
+    return JSONResponse(content=jsonable_encoder(payload),
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/api/cases", tags=["Cases"],
