@@ -47,3 +47,6 @@ backups/
 # Scratch / probe artifacts (local only)
 .qwen/
 temp/
+
+# Export hasil unduhan endpoint (data produksi: MSISDN, order ID, isi chat grup)
+cases_export_*.json
