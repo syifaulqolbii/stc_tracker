@@ -257,6 +257,66 @@ class TestCreateCase:
         data = response.json()
         assert "#Non Order" in data["text"]
 
+    def test_create_case_uses_order_id_as_case_code(self, client):
+        """Tanpa ticket_remedy & case_id, order_id jadi case_code (uppercase)."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non AO",
+            case_code="DOK42608090154409515D6380",
+            case_id=60,
+        )
+
+        response = tc.post("/api/cases", json={
+            "group_id": 1,
+            "jenis_case": "Non AO",
+            "fields": {
+                "order_id": "DOk42608090154409515d6380",
+                "no_indihome": "141133107270",
+                "request_case": "Push Cancel",
+                "detail_case": "Mohon bantuan push cancel order berikut karena akan dilakukan input ulang",
+                "last_milestone": "CANCEL_ORDER_INPROGRESS",
+                "link_evidence": [{"url": "https://prnt.sc/0pQwMlAjIrBR"}],
+            },
+        })
+        assert response.status_code == 201
+        data = response.json()
+        insert_calls = [c for c in mock_cursor.execute.call_args_list
+                        if "INSERT INTO cases" in str(c.args[0])]
+        assert insert_calls, "cases harus di-INSERT"
+        assert insert_calls[0].args[1][0] == "DOK42608090154409515D6380"
+        assert data["case_code"] == "DOK42608090154409515D6380"
+        # Pesan WA pakai nilai asli dari fields, tanpa baris ID yang tidak diisi
+        assert "Order ID : DOk42608090154409515d6380" in data["text"]
+        assert "Nomer Indihome : 141133107270" in data["text"]
+        assert "Ticket Remedy" not in data["text"]
+        assert "Case ID" not in data["text"]
+
+    def test_order_id_does_not_override_case_id(self, client):
+        """case_id tetap prioritas di atas order_id untuk case_code."""
+        tc, mock_cursor = client
+        mock_cursor.fetchone.side_effect = _create_case_mock_sequence(
+            jenis_case_name="Non AO",
+            case_code="1-T92PAGO",
+            case_id=61,
+        )
+
+        response = tc.post("/api/cases", json={
+            "group_id": 1,
+            "jenis_case": "Non AO",
+            "fields": {
+                "case_id": "1-T92PAGO",
+                "order_id": "DOk42608090154409515d6380",
+                "no_indihome": "141133107270",
+            },
+        })
+        assert response.status_code == 201
+        data = response.json()
+        insert_calls = [c for c in mock_cursor.execute.call_args_list
+                        if "INSERT INTO cases" in str(c.args[0])]
+        assert insert_calls[0].args[1][0] == "1-T92PAGO"
+        assert "Case ID : 1-T92PAGO" in data["text"]
+        assert "Order ID : DOk42608090154409515d6380" in data["text"]
+
     def test_create_case_legacy_type_maps(self, client):
         """Legacy case_type 'stc' should map to 'non_order'."""
         tc, mock_cursor = client
@@ -1963,6 +2023,92 @@ class TestMentionRewrite:
                 assert insert_calls[0].args[1][3] == "done INC012392211 @Furqon Nugroho"
         finally:
             main_module._contact_cache.clear()
+
+
+class TestOrderIdIdentifier:
+    """order_id dipakai sebagai identifier case saat ticket_remedy/case_id
+    kosong: bisa di-link lewat teks tanpa reply, lewat chain, dan tampil di
+    notifikasi balasan solver."""
+
+    @pytest.mark.asyncio
+    async def test_rule_links_order_id_without_reply(self):
+        """Pesan 'done <order_id>' TANPA reply harus ter-link via rule."""
+        mock_conn, _ = _make_mock_db()
+        case_row = {"id": 60, "case_code": "DOK42608090154409515D6380",
+                    "group_id": 1, "status": "open", "deleted_at": None}
+        with patch.object(main_module, "db", return_value=mock_conn), \
+             patch.object(main_module, "store_message"), \
+             patch.object(main_module, "resolve_contact_name",
+                          new_callable=AsyncMock, return_value=None), \
+             patch.object(main_module, "notify_case_reply", new_callable=AsyncMock), \
+             patch.object(main_module, "link_and_update") as mock_link, \
+             patch.object(main_module, "_get_group_by_chat",
+                          return_value={"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}), \
+             patch.object(main_module, "open_case_codes",
+                          return_value=["DOK42608090154409515D6380"]), \
+             patch.object(main_module, "find_case_by_code", return_value=case_row):
+            ok = await main_module.handle_message({
+                "id": {"_serialized": "solver_mid_1"},
+                "from": "120363xxx@g.us",
+                "participant": "628111@c.us",
+                "body": "done DOk42608090154409515d6380",
+                "fromMe": False,
+            })
+        assert ok is True
+        mock_link.assert_called_once()
+        args = mock_link.call_args.args
+        assert args[0] == 60
+        assert args[4] == "done"
+        assert args[6] == "rule"
+
+    def test_chain_finds_case_with_order_id_code(self):
+        """Reply ke root case ber-order_id tetap menemukan case lewat chain."""
+        case_row = {"id": 60, "case_code": "DOK42608090154409515D6380",
+                    "group_id": 1, "deleted_at": None}
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        def exec_side_effect(sql, params=None):
+            sql_l = sql.lower()
+            if "from cases where (wa_message_id" in sql_l:
+                mock_cursor.fetchone.return_value = case_row if params[0] == "root_mid" else None
+            else:
+                mock_cursor.fetchone.return_value = None
+
+        mock_cursor.execute.side_effect = exec_side_effect
+        with patch.object(main_module, "db", return_value=mock_conn):
+            case, source = main_module.find_case_by_chain("root_mid")
+        assert case is not None
+        assert case["id"] == 60
+        assert source == "reply"
+
+    @pytest.mark.asyncio
+    async def test_notify_case_reply_uses_order_id_then_id(self):
+        """Notif: tampilkan Order ID kalau ada; tanpa ID apa pun → '#<id>'."""
+        send = AsyncMock()
+        with patch.object(main_module, "_get_default_group",
+                          return_value={"chat_id": "120363xxx@g.us"}), \
+             patch.object(main_module, "waha_send", send):
+            await main_module.notify_case_reply(
+                {"id": 60, "case_code": "DOK42608090154409515D6380",
+                 "fields": {"order_id": "DOk42608090154409515d6380"}},
+                "other@g.us", "Solver", "done", "done",
+            )
+            text_with_order = send.call_args.args[0]
+            assert "Order ID : DOk42608090154409515d6380" in text_with_order
+
+            send.reset_mock()
+            await main_module.notify_case_reply(
+                {"id": 61, "case_code": None, "fields": {}},
+                "other@g.us", "Solver", "done", "done",
+            )
+            text_without_id = send.call_args.args[0]
+            assert "Case : #61" in text_without_id
 
 
 class TestTicketRemedyValidation:

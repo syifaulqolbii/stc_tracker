@@ -226,7 +226,7 @@ Content-Type: application/json
 
 Aturan:
 - `group_id` — **opsional**, int. ID grup WA tujuan (dari `GET /api/groups`). **Dikosongkan → grup default** (`is_default`, biasanya grup test development). Grup eksplisit tidak valid / `is_active=false` → `404`; tidak ada grup default terkonfigurasi → `400`.
-- Field **required** per jenis case: `ticket_remedy` (semua), `no_indihome` (Non Order/Non AO), `order_id` (Non AO), `msisdn` (Mobile). Field lain **opsional**.
+- Field **required** — **aturan UI, bukan validasi backend** (v1.36): backend menerima `fields` kosong total (`{}` → `201`). Di UI: `no_indihome` (Non Order/Non AO), `order_id` (Non AO/AO), `msisdn` (Mobile) tetap wajib; `ticket_remedy` dan `case_id` **opsional** (salah satu boleh kosong, keduanya boleh kosong). Field lain opsional.
 - `jenis_case` — nilai di luar enum di-downgrade ke `Non Order`.
 - `sumber_ticket` — jika diisi `Grapari`, `asal_grapari` bisa diisi (free text, tidak ada tabel lookup).
 - `area_id` / `regional_id` — ID dari tabel lookup. `regional_id` harus valid untuk `area_id` yang dipilih. ID tak dikenal → **422** (v1.16 — divalidasi **sebelum** pesan dikirim, supaya case tidak masuk grup tanpa tercatat di DB).
@@ -234,7 +234,7 @@ Aturan:
 - `mentions` opsional. `number` = nomor WA format internasional **tanpa `+`** (`628xxx`). `name` opsional, hanya untuk tampilan.
 - **Auto-mention `@<nomor>` yang diketik manual** (v1.17; normalisasi format v1.18): token `@628xxx` di custom_header/detail_case OTOMATIS ikut dikirim sebagai mention WAHA — teks polos `@angka` tanpa `mentionedJid` tidak pernah ngetag di WhatsApp (root cause case INC000024096448). v1.18 juga terima format manusiawi: `@+62 811-9298-880`, `@081…`, spasi/strip/titik → selalu dinormalisasi ke `62…`. Nomor hasil extract disimpan ke `cases.mentions` (`name: null`) supaya reminder cron/manual ikut ngetag. Duplikat dengan mentions dropdown di-merge (satu entry). Token tanpa `@` (MSISDN/indihome/INC) dan `@nama` tidak disentuh.
 - `custom_header` opsional. Custom header pesan. Gunakan `{phone}` sebagai placeholder nomor WA. **(v1.17) `{phone}` tapi `mentions` kosong → `422`** (`custom_header mengandung {phone} tapi mentions kosong — pilih solver dari dropdown atau hapus token {phone}`). Sebelumnya literal `{phone}` ikut terkirim ke grup. Jika kosong, pakai default: `punten rekan @<phone> mohon bantuannya untuk case <TYPE> ada 1 case lagi`. Mention `@<phone>` otomatis ditambahkan.
-- `case_code` diturunkan backend dari `fields.ticket_remedy`. Bisa `null`.
+- `case_code` diturunkan backend dari `fields.ticket_remedy` **atau** `fields.case_id` **atau** `fields.order_id` (prioritas berurutan, `strip().upper()`). `null` hanya jika ketiganya kosong. **(v1.36) Case yang hanya mengisi `order_id` tetap dapat `case_code` = `order_id` (uppercase) → otomatis masuk `open_case_codes`, sehingga `done <order_id>` tanpa reply, reply, dan chain semuanya me-link. Pesan WA tetap menampilkan `Order ID` asli dari `fields`.**
 - Mengirim ulang `case_code` yang sudah ada = **re-FU**: status kembali `open`, jangkar pesan diperbarui. Bukan error. Termasuk case yang sudah di-soft-delete (v1.16 — `deleted_at` di-clear, case muncul kembali di dashboard).
 
 **Format pesan WhatsApp (otomatis) — compact:**
@@ -1444,18 +1444,20 @@ FastAPI default: `{ "detail": "pesan error" }` dengan status code sesuai. Valida
 Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualitas tracking.
 
 #### `Non Order` — Case STC/SMOOA/UFO/Other
-| Key | Label UI | Tipe | Required |
+| Key | Label UI | Tipe | Required (UI) |
 |---|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) | ✅ |
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d+`) | ❌ |
+| `case_id` | Case ID | text | ❌ |
 | `no_indihome` | Nomer Indihome | text/tel | ✅ |
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
 | `link_evidence` | Link Evidence | array of {label, url} | ❌ |
 
 #### `Non AO` — Case Non Activation Order
-| Key | Label UI | Tipe | Required |
+| Key | Label UI | Tipe | Required (UI) |
 |---|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text | ✅ |
+| `ticket_remedy` | Ticket Remedy | text | ❌ |
+| `case_id` | Case ID | text | ❌ |
 | `order_id` | Order ID | text | ✅ |
 | `no_indihome` | Nomer Indihome | text/tel | ✅ |
 | `last_milestone` | Last Milestone | text | ❌ |
@@ -1464,9 +1466,10 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 | `link_evidence` | Link Evidence | array of {label, url} | ❌ |
 
 #### `AO` — Case Activation Order (pasang baru, v1.31)
-| Key | Label UI | Tipe | Required |
+| Key | Label UI | Tipe | Required (UI) |
 |---|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d{9,}`) | ✅ |
+| `ticket_remedy` | Ticket Remedy | text (pattern `INC\d{9,}`) | ❌ |
+| `case_id` | Case ID | text | ❌ |
 | `order_id` | Order ID | text | ✅ |
 | `no_indihome` | Nomer Indihome | text/tel | ✅ |
 | `last_milestone` | Last Milestone | text | ❌ |
@@ -1477,10 +1480,13 @@ Semua field **opsional**. Kolom bertanda ★ disarankan diisi di UI demi kualita
 
 > Format field & required **identik `Non AO`** — yang membedakan hanya header pesan WA (`#..._AO_...`). `case_id` opsional (v1.16) dirender sebagai baris `Case ID : <kode>` tepat setelah Ticket Remedy.
 
+> **Kolom Required = aturan UI, bukan validasi backend (v1.36).** `POST /api/cases` menerima `fields` kosong. `order_id` tetap wajib di UI untuk Non AO/AO dan otomatis menjadi `case_code` bila `ticket_remedy` dan `case_id` kosong. Kirim hanya field yang diisi — jangan kirim string kosong untuk `ticket_remedy`/`case_id` (string kosong lolos validasi format tapi tidak menghasilkan baris ID).
+
 #### `Mobile` — Case Mobile
-| Key | Label UI | Tipe | Required |
+| Key | Label UI | Tipe | Required (UI) |
 |---|---|---|---|
-| `ticket_remedy` | Ticket Remedy | text | ✅ |
+| `ticket_remedy` | Ticket Remedy | text | ❌ |
+| `case_id` | Case ID | text | ❌ |
 | `msisdn` | MSISDN | tel | ✅ |
 | `request_case` | Request Case | text | ❌ |
 | `detail_case` | Detail Case | textarea (long text) | ❌ |
@@ -2099,22 +2105,36 @@ https://imgur.com/app_error
 
 ### Ringkasan Field per Kombinasi
 
-| Sumber | Jenis Case | Required Fields | Optional Fields | Asal Grapari |
+| Sumber | Jenis Case | Required Fields (UI) | Optional Fields | Asal Grapari |
 |---|---|---|---|---|
-| STC | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
-| STC | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
-| STC | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
-| STC | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
-| Grapari | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ✅ Wajib input |
-| Grapari | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
-| Grapari | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
-| Grapari | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ✅ Wajib input |
-| Web IT | Non Order | ticket_remedy, no_indihome | request_case, detail_case, link_evidence | ❌ |
-| Web IT | Non AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
-| Web IT | AO | ticket_remedy, order_id, no_indihome | last_milestone, request_case, detail_case, link_evidence | ❌ |
-| Web IT | Mobile | ticket_remedy, msisdn | request_case, detail_case, link_evidence | ❌ |
+| STC | Non Order | no_indihome | ticket_remedy, case_id, request_case, detail_case, link_evidence | ❌ |
+| STC | Non AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ❌ |
+| STC | AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ❌ |
+| STC | Mobile | msisdn | ticket_remedy, case_id, request_case, detail_case, link_evidence | ❌ |
+| Grapari | Non Order | no_indihome | ticket_remedy, case_id, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | Non AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Grapari | Mobile | msisdn | ticket_remedy, case_id, request_case, detail_case, link_evidence | ✅ Wajib input |
+| Web IT | Non Order | no_indihome | ticket_remedy, case_id, request_case, detail_case, link_evidence | ❌ |
+| Web IT | Non AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ❌ |
+| Web IT | AO | order_id, no_indihome | ticket_remedy, case_id, last_milestone, request_case, detail_case, link_evidence | ❌ |
+| Web IT | Mobile | msisdn | ticket_remedy, case_id, request_case, detail_case, link_evidence | ❌ |
+
+> Required di tabel ini = aturan UI (v1.36). Backend menerima semua field opsional; `order_id` (Non AO/AO) wajib di UI karena menjadi `case_code` bila `ticket_remedy`/`case_id` kosong.
 
 ## 13. Changelog
+
+### v1.36 — `order_id` sebagai identifier case (pengganti Case ID)
+
+Case Non AO/AO kini cukup dikirim dengan `order_id`; `fields.ticket_remedy` dan `fields.case_id` **tidak wajib** (backend menerima `fields` kosong).
+
+- **Derivasi `case_code`** (`main-v1-1.py` `create_case`): `fields.ticket_remedy` → `fields.case_id` → `fields.order_id`, `strip().upper()`, `null` hanya jika ketiganya kosong. `order_id` tidak divalidasi format INC (free text). Pesan WA tetap merender `Order ID : < nilai asli >` dari `fields` (tidak uppercase).
+- **Efek linking:** case tanpa tiket/`case_id` kini punya `case_code` = `order_id` → masuk `open_case_codes`, jadi `done <order_id>` **tanpa reply** ter-link lewat rule (source `rule`), selain tetap ter-link via reply (`reply`) dan chain (`chain`).
+- **Re-FU:** mengirim ulang `order_id` yang sama = upsert case yang sama (`ON CONFLICT (case_code) DO UPDATE`, status → `open`). FE wajib disable tombol submit selama request berjalan.
+- **Notifikasi balasan solver** (`notify_case_reply`): tambah baris `Order ID : ...`; bila `ticket_remedy`/`case_id`/`order_id` kosong semua → fallback `Case : #<id>` (sebelumnya `Case : -`).
+- **Validasi 422 `ticket_remedy`** — pesan jadi: `fields.ticket_remedy harus format INC (contoh: INC012345678). Kode non-INC kirim sebagai fields.case_id atau fields.order_id`.
+- **Kontrak FE:** kolom Required di §10/§12 = aturan UI, bukan backend. `order_id` tetap wajib di UI untuk Non AO/AO; `ticket_remedy`/`case_id` opsional. Tipe `case_code` jadi `string | null`; render `case_code ?? fields.order_id ?? "#<id>"`.
+- Test: `tests/test_api.py` — `TestCreateCase.test_create_case_uses_order_id_as_case_code`, `test_order_id_does_not_override_case_id`, `TestOrderIdIdentifier` (rule tanpa reply, chain, notifikasi).
 
 ### v1.35 (19 Oktober 2026) — export timeline semua case ke satu file JSON
 

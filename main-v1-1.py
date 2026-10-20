@@ -1,4 +1,4 @@
-"""IT Tracker v1.35 — export timeline semua case ke satu file JSON.
+"""IT Tracker v1.36 — order_id sebagai identifier case (pengganti Case ID).
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
@@ -13,6 +13,10 @@ media proxy (host harus tepat WAHA_URL), soft-delete dihormati webhook/reminder,
 rate limit login access-code, port app bind 127.0.0.1.
 Perubahan v1.35: GET /api/cases/export.json — detail + timeline (messages, updates,
 participants) SEMUA case dalam satu file unduhan, filter identik list/export Excel.
+Perubahan v1.36: case_code = ticket_remedy atau case_id atau order_id (uppercase) —
+case Non AO/AO cukup dengan order_id; `done <order_id>` tanpa reply ikut me-link
+lewat open_case_codes. Notifikasi balasan menampilkan baris Order ID dan fallback
+`Case : #<id>`.
 Field lama tetap ada, semua opsional. Area → Regional hierarchy.
 Sumber Ticket: STC / Grapari / Web IT. Jenis Case: Non Order / Non AO / Mobile.
 Asal Grapari: text input (tidak disimpan di tabel terpisah).
@@ -203,13 +207,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IT Tracker",
     description=(
-        "Backend API untuk IT Tracker v1.35. "
+        "Backend API untuk IT Tracker v1.36. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
         "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.35.0",
+    version="1.36.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -737,8 +741,13 @@ async def notify_case_reply(case: dict, group_chat_id: str | None,
             parts.append(f"Ticket Remedy : {f['ticket_remedy']}")
         if f.get("case_id"):
             parts.append(f"Case ID : {f['case_id']}")
+        if f.get("order_id"):
+            parts.append(f"Order ID : {f['order_id']}")
         if not parts:
-            parts.append(f"Case : {case.get('case_code') or '-'}")
+            # case_code bisa berisi order_id (uppercase); kalau kosong semua,
+            # #<id> tetap memberi solver sesuatu yang bisa dirujuk.
+            fallback = case.get("case_code") or (f"#{case['id']}" if case.get("id") else "-")
+            parts.append(f"Case : {fallback}")
         ident = " | ".join(parts)
         if f.get("no_indihome"):
             ident += f" (IH {f['no_indihome']})"
@@ -1260,7 +1269,7 @@ class CaseIn(BaseModel):
             if s and not re.fullmatch(r"INC\d{9,}", s, re.I):
                 raise ValueError(
                     "fields.ticket_remedy harus format INC (contoh: INC012345678). "
-                    "Kode non-INC kirim sebagai fields.case_id"
+                    "Kode non-INC kirim sebagai fields.case_id atau fields.order_id"
                 )
         return v
 
@@ -1426,7 +1435,10 @@ async def create_case(inp: CaseIn, request: Request,
             )
 
     f = inp.fields
-    case_code = (f.get("ticket_remedy") or f.get("case_id") or "").strip().upper() or None
+    # Prioritas identifier: ticket_remedy > case_id > order_id. order_id selalu
+    # diisi agent (wajib di UI untuk Non AO/AO), jadi case tanpa tiket Remedy /
+    # case id tetap punya case_code → bisa di-link via teks, reply, dan chain.
+    case_code = (f.get("ticket_remedy") or f.get("case_id") or f.get("order_id") or "").strip().upper() or None
 
     text, jenis_key = _render_case_payload(inp)
 

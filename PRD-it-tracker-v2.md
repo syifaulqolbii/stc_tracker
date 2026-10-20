@@ -533,7 +533,7 @@ flowchart LR
 
 | # | Kondisi | Status | Pesan |
 |---|---|---|---|
-| 1 | `fields.ticket_remedy` tidak match `INC\d{9,}` | `422` | `fields.ticket_remedy harus format INC (contoh: INC012345678). Kode non-INC kirim sebagai fields.case_id` |
+| 1 | `fields.ticket_remedy` tidak match `INC\d{9,}` | `422` | `fields.ticket_remedy harus format INC (contoh: INC012345678). Kode non-INC kirim sebagai fields.case_id atau fields.order_id` |
 | 2 | `custom_header` berisi `{phone}` tapi `mentions` kosong | `422` | `custom_header mengandung {phone} tapi mentions kosong — pilih solver dari dropdown (atau hapus token {phone})` |
 | 3 | `area_id` tidak dikenal | `422` | `area_id <n> tidak dikenal — pakai ID dari GET /api/areas` |
 | 4 | `regional_id` tidak dikenal | `422` | `regional_id <n> tidak dikenal — pakai ID dari GET /api/areas/<area>/regionals` |
@@ -546,7 +546,7 @@ flowchart LR
 
 **Re-FU:** `ON CONFLICT (case_code) DO UPDATE` → `status='open'`, `deleted_at=NULL`, jangkar `wa_message_id` diperbarui. Bukan error.
 
-**`case_code`** = `ticket_remedy` **atau** `case_id` (fallback), `strip().upper()`; bisa `null` (tidak konflik → selalu baris baru).
+**`case_code`** = `ticket_remedy` **atau** `case_id` **atau** `order_id` (fallback berurutan), `strip().upper()`; bisa `null` hanya jika ketiganya kosong (tipe tanpa `order_id`: Non Order/Mobile tanpa tiket/case id → tidak konflik → selalu baris baru). Case yang hanya punya `order_id` (Non AO/AO) otomatis mendapat `case_code` = `order_id` (uppercase) sehingga **ikut `open_case_codes`** dan pesan `done <order_id>` tanpa reply pun ter-link (source `rule`), selain tetap ter-link lewat reply/chain.
 
 **Auto-mention:** token `@628xxx` (juga `@+62 811-9298-880`, `@081…`) di `custom_header`/`detail_case`/teks lain otomatis diekstrak dan digabung dengan `mentions` dropdown (dedupe), dinormalisasi ke `^62\d{7,14}$`.
 
