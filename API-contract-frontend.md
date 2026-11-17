@@ -1,6 +1,6 @@
 # API Contract — IT Tracker (untuk Tim Frontend)
 
-**Versi:** 1.34 · **Tanggal:** 9 Oktober 2026 · **Backend:** FastAPI (`version="1.34.0"`) · **Base path:** `/api`
+**Versi:** 1.37 · **Tanggal:** 17 November 2026 · **Backend:** FastAPI (`version="1.37.0"`) · **Base path:** `/api`
 **Referensi:** PRD v1.5, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -592,7 +592,7 @@ X-API-Key: <key>
 ```
 
 Cara render timeline:
-- `messages` membentuk **pohon** lewat `quoted_id`; root = pesan dengan `wa_message_id == case.wa_message_id` (juga satu-satunya yang `from_me: true`).
+- `messages` membentuk **pohon** lewat `quoted_id`; root = pesan dengan `wa_message_id == case.wa_message_id`. `from_me: true` juga dimiliki pesan bot lain: reminder (§7.1), balasan dari web (§3.6a), dan hasil forward (§3.6b) — jangan pakai `from_me` untuk menebak root.
 - Render sebagai thread bersarang (indent per level) atau flat chronological — data dua-duanya cukup.
 - `participants` = daftar solver yang terlibat rantai — format `{author, name}`. Cocok untuk chip "Ditangani oleh:" dengan nama tampil.
 - `updates[].source` menjelaskan bagaimana update tertangkap:
@@ -821,6 +821,75 @@ Kalau mention dikirim via dropdown FE (bukan diketik), isi `mentions: [{"number"
 | file kebesaran | 1 file 6 MB decoded | `413 {"detail": "bukti.jpg melebihi 5 MB"}` |
 | 4 file | `attachments` berisi 4 entry | `422 {"detail": "Maksimal 3 file per balasan"}` |
 | body kosong | `{}` atau `{}` tanpa message & attachments | `422 {"detail": "message atau attachments wajib diisi"}` |
+
+---
+
+### 3.6b `POST /api/cases/{id}/forward` — Kirim ulang case ke grup lain (v1.37)
+
+Kirim ulang **case yang sudah ada** ke grup WA lain, atau kirim ulang di grup yang sama untuk mengubah tag/teks. Teks dirender ulang dari data case + override di body memakai renderer yang sama dengan `POST /api/cases`.
+
+**Headers:** `X-API-Key: <key>`, `Content-Type: application/json`
+
+**Query params:**
+| Param | Default | Keterangan |
+|---|---|---|
+| `dry_run` | `false` | `true` → hanya render teks, **tidak** mengirim ke WA dan **tidak** menulis DB. Pakai untuk preview di modal konfirmasi. |
+
+**Request:**
+```json
+{
+  "group_id": 2,
+  "mentions": [{ "number": "6282222222222", "name": "Budi" }],
+  "custom_header": null,
+  "fields": { "detail_case": "Diteruskan dari Grup A, mohon dibantu" }
+}
+```
+- `group_id` **opsional**. Berbeda dari grup case sekarang → **pindah grup**. Kosong atau sama → **kirim ulang di grup yang sama** (edit mention/teks).
+- `mentions` **opsional**. Diisi → **mengganti** daftar mention lama (bukan merge). Kosong → memakai `cases.mentions` yang tersimpan. Token `@<nomor>` yang diketik di teks tetap otomatis ikut dikirim sebagai mention (aturan sama dengan §3.2).
+- `custom_header` opsional. Kosong → header default. `{phone}` tanpa mention → `422`.
+- `fields` opsional, **partial merge** ke `fields` case: hanya key yang dikirim yang ditimpa, sisanya dipertahankan. `title` ikut diperbarui dari `detail_case` hasil merge.
+
+**Perilaku:**
+
+| | Pindah grup (`group_id` beda) | Kirim ulang grup sama (`group_id` kosong/sama) |
+|---|---|---|
+| `cases.group_id` | diganti | tetap |
+| `cases.wa_message_id` | anchor baru | anchor baru |
+| `cases.message_text` / `mentions` / `fields` | diperbarui | diperbarui |
+| `status` | **kembali `open`** | **tidak berubah** |
+| `reminder_count` / `last_reminder_at` | **di-reset** (`0` / `NULL`) | tidak berubah |
+| Tracking grup lama | **berhenti** (webhook menolak pesan dari grup lain), histori pesan lama tetap tersimpan & tetap tampil di timeline | — |
+
+- Pesan yang dikirim disimpan ke `wa_messages` dengan `case_id` → balasan solver ke pesan forward langsung ter-link (`source=chain`), dan pesan itu ikut tampil di `GET /api/cases/{id}`.
+- **Tidak mengedit bubble WA lama.** WhatsApp/WAHA tidak menyediakan edit pesan di backend ini; pesan lama tetap ada di grupnya. Yang berubah adalah pesan jangkar case.
+- Metrik (`§3.9`, `§3.9a`) memakai `created_at` asli case dan seluruh balasan yang sudah ter-link — jadi case yang dipindah setelah beberapa hari tetap menghitung waktu dari pengiriman pertama, dan balasan grup lama ikut terhitung. Ini disengaja agar histori tidak hilang.
+
+**Response `200`:**
+```json
+{
+  "ok": true,
+  "dry_run": false,
+  "case_id": 42,
+  "case_code": "INC000023470570",
+  "group_id": 2,
+  "group_name": "Grup B",
+  "previous_group_id": 1,
+  "is_move": true,
+  "status": "open",
+  "status_reset": true,
+  "reminder_reset": true,
+  "wa_message_id": "true_120363002@g.us_3EB0...",
+  "mentions": [{ "number": "6282222222222", "name": "Budi" }],
+  "text": "punten rekan @6282222222222 mohon bantuannya untuk case Non AO ada 1 case lagi\n\n#STC_Non AO\n..."
+}
+```
+`text` = pesan final persis yang terkirim (atau yang akan dikirim bila `dry_run=true`) — tampilkan di toast/modal.
+
+**Error:** `401` API key salah · `404` case tidak ada / sudah di-soft-delete · `422` `group_id` tidak dikenal atau `custom_header` memakai `{phone}` tanpa mention · `409` grup tujuan dinonaktifkan · `400` case tidak punya grup aktif (grup asal sudah nonaktif) · `502` WAHA gagal (case **tidak** diubah).
+
+**Contoh FE:** tombol **"Forward"** di detail case → pilih grup tujuan (dari `GET /api/groups`) + atur ulang mention → `?dry_run=true` untuk preview → konfirmasi → `POST` tanpa `dry_run` → refresh detail case.
+
+> Panduan FE **mandiri** (alur UI, copy konfirmasi, error mapping, TypeScript, checklist) — tanpa perlu membaca dokumen ini: `docs/panduan-frontend-forward-case.md`.
 
 ---
 
@@ -2123,6 +2192,14 @@ https://imgur.com/app_error
 > Required di tabel ini = aturan UI (v1.36). Backend menerima semua field opsional; `order_id` (Non AO/AO) wajib di UI karena menjadi `case_code` bila `ticket_remedy`/`case_id` kosong.
 
 ## 13. Changelog
+
+### v1.37 — forward / kirim ulang case ke grup lain
+
+- **§3.6b `POST /api/cases/{id}/forward`** — section baru. Endpoint mengirim ulang case yang sudah ada ke grup lain (**pindah**: `group_id`/`wa_message_id`/`message_text`/`mentions`/`fields` diperbarui, `status` kembali `open`, `reminder_count` + `last_reminder_at` di-reset) atau ke grup yang sama (**edit mention/teks**: status & reminder tidak diubah). `mentions` bersifat REPLACE; `fields` partial merge; `?dry_run=true` untuk preview tanpa kirim/DB.
+- **Renderer bersama** — `_render_case_text` diekstrak dari `_render_case_payload`; create/preview/test-send/forward memakai satu jalur render sehingga teksnya identik.
+- **Chain** — pesan hasil forward disimpan ke `wa_messages` dengan `case_id`, jadi balasan solver ke pesan itu ter-link (`source=chain`) dan ikut timeline.
+- **Batasan yang disengaja:** tidak ada edit bubble WA lama (WAHA tidak dipakai untuk edit pesan); metrik tetap memakai `created_at` asli dan balasan grup lama yang sudah ter-link.
+- Test: `tests/test_forward.py` (13 kasus: move, same-group, replace mention, ekstraksi `@nomor`, partial fields, dry-run, 404/422/409/400).
 
 ### v1.36 — `order_id` sebagai identifier case (pengganti Case ID)
 

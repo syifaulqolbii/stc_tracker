@@ -1,4 +1,9 @@
-"""IT Tracker v1.36 — order_id sebagai identifier case (pengganti Case ID).
+"""IT Tracker v1.37 — forward / kirim ulang case ke grup lain (move + edit mention).
+
+Perubahan v1.37: POST /api/cases/{id}/forward — kirim ulang case yang sudah ada ke
+grup lain (pindah: status kembali open, reminder di-reset) atau ke grup yang sama
+(edit mention/teks, status tetap). Renderer diekstrak ke _render_case_text supaya
+teks forward identik dengan POST /api/cases.
 
 Perubahan v1.2: tambah Area, Regional, Sumber Ticket, Jenis Case (tabel lookup).
 Perubahan v1.7: multi-grup WA (tabel wa_groups + cases.group_id wajib).
@@ -207,13 +212,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IT Tracker",
     description=(
-        "Backend API untuk IT Tracker v1.36. "
+        "Backend API untuk IT Tracker v1.37. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
         "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.36.0",
+    version="1.37.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -835,16 +840,21 @@ def _resolve_jenis_case_name(name: str | None) -> str:
     return LEGACY_CASE_TYPE_MAP.get(name, "non_order")
 
 
-def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
-    """Render teks case persis seperti yang dikirim create_case.
+def _render_case_text(mentions: list[dict], jenis_case: str | None, fields: dict, *,
+                      custom_header: str | None = None,
+                      area_id: int | None = None,
+                      regional_id: int | None = None,
+                      sumber_ticket: str | None = None,
+                      asal_grapari: str | None = None) -> tuple[str, str]:
+    """Render teks case dari nilai mentah (v1.37).
 
-    Dipakai bersama oleh POST /api/cases, /api/cases/preview, dan /api/cases/test-send
-    supaya teks yang di-preview/di-test DIJAMIN identik dengan yang dikirim ke grup asli.
-    Read-only (hanya SELECT nama area/regional) — tidak menulis ke DB.
+    Satu implementasi untuk create, preview, test-send, DAN forward supaya
+    teks yang dihasilkan dijamin identik. Read-only (hanya SELECT nama
+    area/regional) — tidak menulis ke DB.
 
     Return: (text, jenis_key)
     """
-    if inp.custom_header and "{phone}" in inp.custom_header and not inp.mentions:
+    if custom_header and "{phone}" in custom_header and not mentions:
         # custom_header menuntut slot mention tapi tidak ada nomor terpilih —
         # tolak sebelum kirim supaya literal "{phone}" tidak masuk grup.
         raise HTTPException(
@@ -852,8 +862,7 @@ def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
             detail="custom_header mengandung {phone} tapi mentions kosong — pilih solver "
                    "dari dropdown (atau hapus token {phone})",
         )
-    jenis_key = _resolve_jenis_case_name(inp.jenis_case)
-    f = inp.fields
+    jenis_key = _resolve_jenis_case_name(jenis_case)
 
     # Resolve names for template rendering. ID tak dikenal → 422 SEBELUM
     # waha_send, supaya pesan tidak masuk grup tanpa row case di DB (fix
@@ -862,36 +871,48 @@ def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
     area_name = None
     regional_name = None
     with db() as conn, conn.cursor() as cur:
-        if inp.area_id:
-            cur.execute("SELECT name FROM areas WHERE id = %s", (inp.area_id,))
+        if area_id:
+            cur.execute("SELECT name FROM areas WHERE id = %s", (area_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"area_id {inp.area_id} tidak dikenal — pakai ID dari GET /api/areas",
+                    detail=f"area_id {area_id} tidak dikenal — pakai ID dari GET /api/areas",
                 )
             area_name = row["name"]
-        if inp.regional_id:
-            cur.execute("SELECT name FROM regionals WHERE id = %s", (inp.regional_id,))
+        if regional_id:
+            cur.execute("SELECT name FROM regionals WHERE id = %s", (regional_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"regional_id {inp.regional_id} tidak dikenal — pakai ID dari "
-                           f"GET /api/areas/{inp.area_id or '?'}/regionals",
+                    detail=f"regional_id {regional_id} tidak dikenal — pakai ID dari "
+                           f"GET /api/areas/{area_id or '?'}/regionals",
                 )
             regional_name = row["name"]
 
-    header = render_header([m.model_dump() for m in inp.mentions], jenis_key, custom_header=inp.custom_header) if (inp.mentions or inp.custom_header) else ""
+    header = render_header(mentions, jenis_key, custom_header=custom_header) if (mentions or custom_header) else ""
     body_text = render_case_text(
-        jenis_key, f,
+        jenis_key, fields,
         area_name=area_name,
         regional_name=regional_name,
-        sumber_ticket=inp.sumber_ticket,
-        asal_grapari=inp.asal_grapari,
+        sumber_ticket=sumber_ticket,
+        asal_grapari=asal_grapari,
     )
     text = f"{header}\n\n{body_text}" if header else body_text
     return text, jenis_key
+
+
+def _render_case_payload(inp: "CaseIn") -> tuple[str, str]:
+    """Render teks untuk body POST /api/cases (create / preview / test-send)."""
+    return _render_case_text(
+        [m.model_dump() for m in inp.mentions], inp.jenis_case, inp.fields,
+        custom_header=inp.custom_header,
+        area_id=inp.area_id,
+        regional_id=inp.regional_id,
+        sumber_ticket=inp.sumber_ticket,
+        asal_grapari=inp.asal_grapari,
+    )
 
 
 # ---------------------------------------------------------------- Group helpers
@@ -1277,6 +1298,26 @@ class TestSendIn(CaseIn):
     test_group_id: int | None = Field(None, ge=1, description="ID grup tujuan TEST (opsional). Kosongkan → kirim ke grup default (is_default). ID bisa dari GET /api/groups?include_default=true")
 
 
+class ForwardIn(BaseModel):
+    group_id: int | None = Field(
+        None, ge=1,
+        description=("ID grup tujuan (GET /api/groups). Kosong atau sama dengan grup case sekarang → "
+                     "kirim ULANG di grup yang sama (edit mention) tanpa reset status. "
+                     "Berbeda → case PINDAH ke grup itu: status kembali open, reminder di-reset."),
+    )
+    mentions: list[Mention] | None = Field(
+        None,
+        description=("Ganti daftar mention (REPLACE, bukan merge). Kosong → pakai mentions case "
+                     "sekarang. Token @<nomor> yang diketik di teks tetap otomatis ditambahkan."),
+    )
+    custom_header: str | None = Field(None, description="Custom header. Kosong → header default.")
+    fields: dict | None = Field(
+        None,
+        description=("Partial merge ke fields case sebelum render (mis. detail_case). Field yang "
+                     "tidak dikirim dipertahankan."),
+    )
+
+
 class StatusIn(BaseModel):
     # v1.29: Literal — issue tidak lagi valid (data historis tetap tampil)
     status: Literal["open", "in_progress", "done"] = Field(..., description="Status baru: open, in_progress, done (v1.29: issue dihapus)")
@@ -1542,6 +1583,191 @@ async def test_send_case(inp: TestSendIn,
     log.info("TEST-SEND ke grup '%s' (%s) — tidak disimpan sebagai case", group["name"], group["chat_id"])
     return {"ok": True, "test_group_id": group["id"], "test_group_name": group["name"],
             "wa_message_id": wa_mid, "text": text}
+
+
+# ---------------------------------------------------------------- Forward / re-send case (v1.37)
+
+def _case_mentions(case: dict) -> list[dict]:
+    """Normalisasi cases.mentions (JSONB bisa list atau string) → [{number, name}]."""
+    raw = case.get("mentions") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for m in raw:
+        if isinstance(m, dict) and m.get("number"):
+            out.append({"number": str(m["number"]), "name": m.get("name")})
+    return out
+
+
+def _case_fields(case: dict) -> dict:
+    """Normalisasi cases.fields (JSONB bisa dict atau string) → dict."""
+    f = case.get("fields") or {}
+    if isinstance(f, str):
+        try:
+            f = json.loads(f)
+        except Exception:
+            f = {}
+    return f if isinstance(f, dict) else {}
+
+
+_LOOKUP_NAME_SQL = {
+    "jenis_cases": "SELECT name FROM jenis_cases WHERE id = %s",
+    "sumber_tickets": "SELECT name FROM sumber_tickets WHERE id = %s",
+}
+
+
+def _lookup_name(table: str, row_id) -> str | None:
+    """Nama lookup dari tabel yang di-whitelist (bukan nama tabel dinamis)."""
+    sql = _LOOKUP_NAME_SQL.get(table)
+    if sql is None or row_id is None:
+        return None
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(sql, (row_id,))
+        row = cur.fetchone()
+    return row["name"] if row else None
+
+
+@app.post("/api/cases/{case_id}/forward", tags=["Cases"],
+          summary="Forward / kirim ulang case ke grup lain (atau edit mention di grup yang sama)",
+          description=(
+              "Kirim ulang case yang SUDAH ADA ke grup WA lain, atau kirim ulang di grup yang sama "
+              "untuk mengubah tag/teks. Teks dirender ulang dari data case + override di body, "
+              "memakai renderer yang sama dengan POST /api/cases.\n\n"
+              "- `group_id` berbeda dari grup case sekarang → **pindah grup**: `cases.group_id`, "
+              "`wa_message_id`, `message_text`, `mentions` diperbarui, `status` kembali `open`, "
+              "`reminder_count`/`last_reminder_at` di-reset. Tracking grup lama berhenti (webhook "
+              "menolak pesan dari grup lain), tapi histori pesan lama tetap tersimpan.\n"
+              "- `group_id` kosong atau sama → **kirim ulang di grup yang sama**: hanya mention/teks/"
+              "anchor yang diperbarui; status dan reminder TIDAK di-reset.\n"
+              "- `dry_run=true` → hanya render, tidak mengirim dan tidak menulis DB.\n\n"
+              "Tidak mengedit bubble WhatsApp lama — pesan lama tetap ada di grupnya (tidak ada API "
+              "edit pesan). Yang berubah adalah pesan jangkar baru untuk case ini."))
+async def forward_case(case_id: int, inp: ForwardIn, request: Request,
+                       dry_run: bool = Query(False, description="true = hanya render teks, tidak mengirim & tidak menulis DB"),
+                       _auth: str = Depends(verify_api_key),
+                       _rate: None = Depends(check_rate_limit)):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM cases WHERE id = %s AND deleted_at IS NULL", (case_id,))
+        case = cur.fetchone()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found or already deleted")
+
+    # Target grup: eksplisit (harus aktif) atau grup case sekarang.
+    if inp.group_id is not None:
+        group = _get_group(inp.group_id)
+        if not group:
+            known = _get_group_any(inp.group_id)
+            if not known:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"group_id {inp.group_id} tidak dikenal — pakai ID dari GET /api/groups",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"grup '{known['name']}' sedang dinonaktifkan admin — pilih grup lain "
+                       f"atau minta grup ini diaktifkan kembali",
+            )
+    else:
+        group = _get_group(case["group_id"]) if case.get("group_id") else None
+        if not group:
+            raise HTTPException(status_code=400, detail="Case tidak punya grup aktif")
+
+    is_move = group["id"] != case.get("group_id")
+
+    # Fields: partial merge (field yang tidak dikirim dipertahankan).
+    fields = {**_case_fields(case), **(inp.fields or {})}
+
+    # Mentions: REPLACE bila dikirim, selain itu pakai yang tersimpan.
+    base_mentions = ([m.model_dump() for m in inp.mentions]
+                     if inp.mentions is not None else _case_mentions(case))
+
+    # jenis/sumber dirender dari lookup (nama), fallback ke case_type legacy.
+    jenis_name = _lookup_name("jenis_cases", case.get("jenis_case_id")) or case.get("case_type")
+    sumber_name = _lookup_name("sumber_tickets", case.get("sumber_ticket_id"))
+
+    text, _ = _render_case_text(
+        base_mentions, jenis_name, fields,
+        custom_header=inp.custom_header,
+        area_id=case.get("area_id"),
+        regional_id=case.get("regional_id"),
+        sumber_ticket=sumber_name,
+        asal_grapari=case.get("asal_grapari"),
+    )
+
+    # Merge token @<nomor> yang diketik manual di teks (pola create_case):
+    # tanpa mentionedJid, teks polos @angka tidak pernah nge-tag.
+    known = {m["number"]: m.get("name") for m in base_mentions}
+    for num in extract_mention_numbers(text):
+        known.setdefault(num, None)
+    merged_mentions = [{"number": num, "name": known[num]} for num in known]
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "case_id": case_id,
+                "case_code": case.get("case_code"),
+                "group_id": group["id"], "group_name": group["name"],
+                "previous_group_id": case.get("group_id"),
+                "is_move": is_move, "mentions": merged_mentions, "text": text}
+
+    wa_mid = await waha_send(text, mentions=[m["number"] for m in merged_mentions] or None,
+                             chat_id=group["chat_id"])
+    if not wa_mid:
+        # Pesan mungkin sudah masuk grup tapi tanpa id → jangan set anchor NULL
+        # (reminder/reply-chain akan putus). Case dibiarkan pada anchor lama.
+        raise HTTPException(
+            status_code=502,
+            detail="WAHA tidak mengembalikan message id — cek grup tujuan sebelum mengulang",
+        )
+
+    # title mengikuti detail_case hasil merge (sama dengan aturan create_case);
+    # ack di-reset karena jangkar pesan berganti — ack lama milik pesan lain.
+    title = (fields.get("detail_case") or "")[:120]
+    with db() as conn, conn.cursor() as cur:
+        if is_move:
+            # Pindah grup = re-FU: mulai dari awal, reminder ikut di-reset supaya
+            # cron tidak memakai riwayat reminder grup lama.
+            cur.execute(
+                """UPDATE cases
+                   SET group_id = %s, wa_message_id = %s, message_text = %s, fields = %s,
+                       mentions = %s, title = %s, ack = NULL, status = 'open',
+                       reminder_count = 0, last_reminder_at = NULL, updated_at = now()
+                   WHERE id = %s""",
+                (group["id"], wa_mid, text, json.dumps(fields),
+                 json.dumps(merged_mentions), title, case_id),
+            )
+        else:
+            cur.execute(
+                """UPDATE cases
+                   SET wa_message_id = %s, message_text = %s, fields = %s, mentions = %s,
+                       title = %s, ack = NULL, updated_at = now()
+                   WHERE id = %s""",
+                (wa_mid, text, json.dumps(fields), json.dumps(merged_mentions),
+                 title, case_id),
+            )
+        # Simpan pesan terkirim sebagai pesan case supaya (a) ikut timeline, dan
+        # (b) balasan solver ke pesan ini langsung ter-resolve via chain.
+        if wa_mid:
+            cur.execute(
+                """INSERT INTO wa_messages (wa_message_id, case_id, body, from_me)
+                   VALUES (%s, %s, %s, true) ON CONFLICT (wa_message_id) DO NOTHING""",
+                (wa_mid, case_id, text),
+            )
+        conn.commit()
+
+    log.info("FORWARD case %s -> grup '%s' (%s)%s",
+             case.get("case_code"), group["name"], group["chat_id"],
+             " [PINDAH]" if is_move else " [kirim ulang grup sama]")
+    return {"ok": True, "dry_run": False, "case_id": case_id,
+            "case_code": case.get("case_code"),
+            "group_id": group["id"], "group_name": group["name"],
+            "previous_group_id": case.get("group_id"),
+            "is_move": is_move, "status": "open" if is_move else case.get("status"),
+            "status_reset": is_move, "reminder_reset": is_move,
+            "wa_message_id": wa_mid, "mentions": merged_mentions, "text": text}
 
 
 # Filter SQL list cases — dipakai bersama GET /api/cases, GET /api/cases/export.xlsx,

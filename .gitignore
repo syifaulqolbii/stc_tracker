@@ -33,6 +33,8 @@ Thumbs.db
 
 # Logs
 *.log
+# Runtime logs/diagnostics — bisa memuat token webhook & data produksi
+logs/
 
 # Docker
 docker-compose.override.yml

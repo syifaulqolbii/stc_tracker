@@ -460,6 +460,7 @@ flowchart LR
 | 8 | `POST /api/cases/{id}/status` | API key | Koreksi status manual |
 | 9 | `POST /api/cases/{id}/replies` | API key | Balas solver dari web (teks/lampiran) |
 | 10 | `DELETE /api/cases/{id}` | API key | Soft delete |
+| 10a | `POST /api/cases/{id}/forward` | API key | Kirim ulang case ke grup lain (pindah) atau edit mention di grup yang sama (v1.37) |
 | 11 | `POST /api/cases/{id}/reminder` | API key | Reminder manual |
 | 12 | `GET /api/cases/{id}/reminder` | API key | Riwayat reminder case |
 | 13 | `POST /api/reminders/run` | API key | Auto-reminder batch (cron) |
@@ -1019,7 +1020,7 @@ Cacat isi (bukan kosmetik) — hasil audit 16 Okt 2026. **Prioritas: C1 dan C3 b
 | **P2** | `GET /api/waha/sessions` (daftar session + status untuk UI) | Saat ini hanya muncul di `/health`; §6.5 FR-O6 |
 | **P3** | Event `message.revoked` (case dihapus pesannya) | Belum ada |
 | **P3** | TTL cache kontak + refresh terjadwal | T17 |
-| **P3** | Endpoint `PATCH /api/cases/{id}` untuk edit field case | Belum ada (hanya status) |
+| **P3** | Endpoint `PATCH /api/cases/{id}` untuk edit field case tanpa kirim ulang | Sebagian: `POST /api/cases/{id}/forward` (v1.37) mengubah field/mention sambil **mengirim ulang** case. Edit tanpa kirim WA belum ada |
 | **P4** | Multi-nomor WA per regional | **Rencana DRAFT — belum dieksekusi**: `docs/plan-multi-nomor-regional.md`. Ringkas: butuh tabel `wa_sessions`, kolom `session_id` di `wa_groups`/`cases`/`wa_messages`, refactor 11 titik kode yang membaca `WAHA_SESSION` global, cache kontak per session; **wajib Fase 0 (uji RAM 3 session + uji error 463/475 WhatsApp)** sebelum menulis kode. Dokumen tersebut merekomendasikan Opsi A (tetap 1 nomor, label regional sudah ada di header pesan) atau Opsi B (2–3 nomor) sebelum Opsi C (12 nomor). Belum ada `session_id` di kode maupun SQL mana pun |
 
 ---
