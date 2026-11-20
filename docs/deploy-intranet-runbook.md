@@ -6,7 +6,7 @@ Artefak yang harus ada di PC (folder `offline/` repo):
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 533–537 KB | `f9392b8a960969cb0fd83271aefb182fecbb1873a2a64aa426ea993931111bd7` |
+| `it-tracker-src.tgz` | 541,323 B | `eb4ce3740f5bc6c6afda6b0f3080912bc05f0605d651bb104ed564a2469735a1` |
 | `it-tracker-py310-wheels.tgz` | 17,083,860 B | `b0d3474eda0f4f97b27c88f73e8b76d52af5f30a7e42f573a48778a3b27bc474` |
 | `db-bootstrap.sql` | 10,888 B | `fa93d1393e168607d27152d3359544714493c8b074c261fcef55b9c174a55ff8` |
 
