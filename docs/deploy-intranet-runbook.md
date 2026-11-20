@@ -166,7 +166,7 @@ Isi yang **wajib** diganti di `vi`:
 
 | Baris | Nilai |
 |---|---|
-| `DATABASE_URL` | ganti `GANTI_PASSWORD` dengan password `usernamedb`. **Jangan hapus** `?options=-csearch_path%3Ddc_schema&connect_timeout=5&sslmode=prefer` |
+| `DATABASE_URL` | ganti `GANTI_PASSWORD` dengan password `usernamedb`. **Jangan hapus** `?options=-csearch_path%3Ddc_schema&connect_timeout=5&sslmode=prefer`. Nilai **tetap di dalam kutip satu** (`'...'`) |
 | `JWT_SECRET` | hasil `openssl` #1 |
 | `BACKEND_API_KEY` | hasil `openssl` #2 — **catat**, dipakai FE |
 | `WAHA_WEBHOOK_SECRET` | hasil `openssl` #3 |
@@ -184,6 +184,24 @@ grep -E '^(BACKEND_PUBLIC_URL|MEDIA_DIR)=' .env
 ```
 
 ✅ `600 .env`, dua baris bernilai tepat seperti tabel.
+
+**Kalau password DB mengandung karakter khusus** (`@ : / ? # [ ] % $` lalu backtick, `"`, `'`, `\`, atau spasi), percent-encode dulu — password mentah akan merusak parsing URI **tanpa error**:
+
+```bash
+read -rp 'password: ' P; python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$P"
+# @ -> %40  $ -> %24  ` -> %60  " -> %22  \ -> %5C  ' -> %27  spasi -> %20  : -> %3A  / -> %2F  # -> %23
+```
+
+Tempel hasilnya sebagai `GANTI_PASSWORD`. Uji hasil akhirnya tanpa membocorkan password:
+
+```bash
+set -a; . ./.env; set +a
+/apps/www/it-tracker/venv/bin/python -c "
+from psycopg.conninfo import conninfo_to_dict as d; i=d(__import__('os').environ['DATABASE_URL'])
+print('host=',i['host'],'db=',i['dbname'],'user=',i['user'],'search_path=',i['options'])"
+```
+
+✅ `host= 10.53.142.244 db= namadb user= usernamedb search_path= -csearch_path=dc_schema`. Kalau `host` bukan IP itu, password belum di-encode dengan benar.
 
 ### 4B. Start
 
