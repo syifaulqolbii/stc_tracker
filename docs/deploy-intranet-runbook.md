@@ -2,6 +2,9 @@
 
 Acuan commit: `main` @ `d8a9c0a`. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
+> **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv), lalu **Task 2** (butuh `venv/bin/python`, karena VM tidak punya `psql`), lalu **4A–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
+> Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
+
 Artefak yang harus ada di PC (folder `offline/` repo):
 
 | File | Ukuran | SHA-256 |
