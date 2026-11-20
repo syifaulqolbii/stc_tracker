@@ -1,6 +1,6 @@
 # Panduan manual — Deploy IT Tracker di VM intranet (PuTTY + WinSCP)
 
-Acuan commit: `main` @ `d8a9c0a`. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
+Acuan commit: `main` @ `d8a9c0a` untuk **kode aplikasi** (tarball `it-tracker-src.tgz` dibangun dari sana; commit runbook sesudahnya hanya dokumentasi). Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
 > **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv), lalu **Task 2** (butuh `venv/bin/python`, karena VM tidak punya `psql`), lalu **4A–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
 > Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
@@ -9,7 +9,7 @@ Artefak yang harus ada di PC (folder `offline/` repo):
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 541,323 B | `eb4ce3740f5bc6c6afda6b0f3080912bc05f0605d651bb104ed564a2469735a1` |
+| `it-tracker-src.tgz` | 533,415 B | `69470831c31e43f45a86adc4d914ed61107c76e0ded81a50a9ab77c7017ecc29` |
 | `it-tracker-py310-wheels.tgz` | 17,083,860 B | `b0d3474eda0f4f97b27c88f73e8b76d52af5f30a7e42f573a48778a3b27bc474` |
 | `db-bootstrap.sql` | 10,888 B | `fa93d1393e168607d27152d3359544714493c8b074c261fcef55b9c174a55ff8` |
 
