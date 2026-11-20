@@ -15,7 +15,9 @@ emit() {
   printf 'SET search_path TO dc_schema;\nBEGIN;\n\n'
   for f in "${files[@]}"; do
     printf -- '-- ===== %s\n' "$f"
-    cat "$f"; printf '\n\n'
+    # Normalkan CRLF -> LF: beberapa file schema tersimpan CRLF di checkout Windows,
+    # dan itu membuat sha256 db-bootstrap.sql berbeda antar-mesin.
+    sed 's/\r$//' "$f"; printf '\n\n'
   done
   cat <<'SQL'
 -- alert_state: dulu dibuat runtime oleh app; di sini agar role aplikasi tidak butuh CREATE
