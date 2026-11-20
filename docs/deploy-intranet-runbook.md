@@ -492,6 +492,22 @@ Lalu pasang ulang Task 5C–5E. Rollback app: `deploy/native/ctl.sh stop`.
 
 ---
 
+## Fakta terukur (diverifikasi di workstation, 2026-11-20)
+
+Dijalankan dengan `main-v1-1.py` asli + uvicorn lokal (`--root-path /it-tracker`), DB diarahkan ke port tertutup:
+
+| Yang diuji | Hasil terukur | Implikasi |
+|---|---|---|
+| `GET /health`, `/docs`, `/openapi.json` tanpa prefix | `200`, `200`, `200` | uvicorn **tidak** men-strip prefix; Apache wajib membuang `/it-tracker` lewat `ProxyPass` |
+| `GET /it-tracker/health` langsung ke uvicorn | `404` | konfirmasi tabel prefix di plan; jangan pernah menembak uvicorn dengan prefix |
+| `url:` di dalam `/docs` | `/it-tracker/openapi.json` | `--root-path` memulihkan prefix untuk Swagger |
+| `GET /api/cases` tanpa `X-API-Key` | `401` (walau DB mati) | cek auth di `verify.sh` valid bahkan saat DB down |
+| `POST /webhooks/waha` tanpa/`?token=salah` | `401`, `401` | `WAHA_WEBHOOK_SECRET` benar-benar digate |
+| `GET /health` saat DB tak terjangkau | `200` setelah **~32 s**, `db.status=error`, `status=degraded` | `curl -m 8` di `watchdog.sh` menganggapnya gagal → lihat catatan di bawah |
+| App start saat DB mati | port tetap listen, `/docs` 200 | app tidak crash-loop karena DB |
+
+**Catatan watchdog:** dengan DB lambat/mati, `/health` bisa >8 s sehingga watchdog menghitung "gagal". Dua kegagalan berturut = restart. Restart **tidak** memperbaiki DB, tapi tidak merusak apa pun; saat DB pulih, siklus berhenti sendiri. Kalau ingin menghindari restart sia-sia, naikkan `-m 8` → `-m 45` di `watchdog.sh` **setelah** deploy stabil. `verify.sh` memakai `-m 10`, jadi saat DB mati ia akan `FAIL: health tidak reachable` — itu perilaku yang diinginkan (deploy belum sehat).
+
 ## Lampiran — kalau ada yang gagal
 
 | Gejala | Cek |
