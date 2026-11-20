@@ -17,18 +17,24 @@ from pathlib import Path
 
 
 def load_dsn(args) -> str:
+    """--dsn > .env > environment.
+
+    .env menang atas environment karena ctl.sh (set -a; . .env) juga membuat
+    nilai .env yang menang; nilai DATABASE_URL yang ter-export di shell bisa
+    basi dan pernah menunjuk host yang salah.
+    """
     if args.dsn:
         return args.dsn
-    dsn = os.getenv("DATABASE_URL", "")
-    if dsn:
-        return dsn
     env_file = Path(args.env)
     if env_file.is_file():
         for line in env_file.read_text().splitlines():
             line = line.strip()
             if line.startswith("DATABASE_URL="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    sys.exit("DATABASE_URL tidak ditemukan (env, .env, atau --dsn)")
+    dsn = os.getenv("DATABASE_URL", "")
+    if dsn:
+        return dsn
+    sys.exit("DATABASE_URL tidak ditemukan (.env, env, atau --dsn)")
 
 
 def main() -> int:

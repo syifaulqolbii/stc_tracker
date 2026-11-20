@@ -508,6 +508,23 @@ Dijalankan dengan `main-v1-1.py` asli + uvicorn lokal (`--root-path /it-tracker`
 
 **Catatan watchdog:** dengan DB lambat/mati, `/health` bisa >8 s sehingga watchdog menghitung "gagal". Dua kegagalan berturut = restart. Restart **tidak** memperbaiki DB, tapi tidak merusak apa pun; saat DB pulih, siklus berhenti sendiri. Kalau ingin menghindari restart sia-sia, naikkan `-m 8` → `-m 45` di `watchdog.sh` **setelah** deploy stabil. `verify.sh` memakai `-m 10`, jadi saat DB mati ia akan `FAIL: health tidak reachable` — itu perilaku yang diinginkan (deploy belum sehat).
 
+### Bootstrap SQL diuji pada PostgreSQL sungguhan
+
+`db-bootstrap.sql` dijalankan pada cluster PostgreSQL lokal (fresh database, role `usernamedb` non-superuser, schema `dc_schema` kosong):
+
+| Uji | Hasil |
+|---|---|
+| `psql -v ON_ERROR_STOP=1 -f db-bootstrap.sql` sebagai `usernamedb` | exit 0 |
+| Dijalankan **dua kali** (idempotensi) | exit 0, hanya `NOTICE ... already exists` |
+| `information_schema.tables` di `dc_schema` | 11 (daftar sesuai Task 2 Step 4) |
+| `sumber_tickets` / `jenis_cases` | `Grapari, STC, Web IT` / `Mobile, Non AO, Non Order` |
+| `dc_schema.alert_state` | 0 baris |
+| Objek bocor ke `public` | 0 |
+| `scripts/apply-db-bootstrap.py` (via `.env` dan via `--dsn`) | `search_path: dc_schema`, 11 tabel |
+| `deploy/native/check-db.sh` | gate lulus pada schema kosong (`tables (0)`) dan setelah bootstrap (`tables (11)`) |
+
+Sesudah bootstrap, app asli (`main-v1-1.py`) dijalankan terhadap database itu: `/health` → `db.status=ok`, `/api/cases`, `/api/areas`, `/api/sumber-tickets`, `/api/jenis-cases`, `/api/groups`, `/api/solver-contacts`, `/api/reminders/pending` → **200** dengan `X-API-Key` dan **401** tanpa key; `POST /api/solver-contacts` → 201; `alert_state` tetap di `dc_schema`, `public` bersih.
+
 ## Lampiran — kalau ada yang gagal
 
 | Gejala | Cek |
