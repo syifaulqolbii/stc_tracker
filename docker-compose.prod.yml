@@ -44,11 +44,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  waha:
-    restart: always
-    ports: []  # Don't expose directly
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # WAHA TIDAK didefinisikan di docker-compose.yml (container terpisah, join
+  # network moban-net). Blok override di sini membuat compose gagal validasi:
+  # "service waha has neither an image nor a build context specified".
