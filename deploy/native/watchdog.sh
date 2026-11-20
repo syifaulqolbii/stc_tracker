@@ -3,9 +3,13 @@
 set -uo pipefail
 APP_DIR="${APP_DIR:-/apps/www/it-tracker}"
 STATE="$APP_DIR/run/watchdog.fail"
-BASE="http://127.0.0.1:8000/health"   # langsung ke uvicorn: TANPA prefix
+PORT="${PORT:-8000}"
+BASE="http://127.0.0.1:$PORT/health"   # langsung ke uvicorn: TANPA prefix
 
-code=$(curl -s -o /dev/null -m 8 -w '%{http_code}' "$BASE" || echo 000)
+# -m 45: /health bisa lambat saat DB bermasalah (dibuktikan ~32 s di uji lokal);
+# timeout 8 s membuat watchdog me-restart app sehat dan tidak pernah stabil.
+code=$(curl -s -o /dev/null -m 45 -w '%{http_code}' "$BASE" 2>/dev/null)
+[[ -z "$code" || "$code" == "000" ]] && code=000
 if [[ "$code" == "200" ]]; then
   [[ -f "$STATE" ]] && rm -f "$STATE"
   exit 0

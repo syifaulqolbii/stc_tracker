@@ -14,6 +14,11 @@ APP_DIR="${APP_DIR:-/apps/www/it-tracker}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
 PID_FILE="$APP_DIR/run/uvicorn.pid"
 LOG_FILE="$APP_DIR/logs/app.log"
+# PORT dibaca dari env, lalu dari .env (dibaca literal, tidak di-source di sini
+# supaya status/stop tetap benar walau .env berisi baris lain).
+if [[ -z "${PORT:-}" && -r "${ENV_FILE:-}" ]]; then
+  PORT=$(sed -n 's/^[[:space:]]*PORT=//p' "$ENV_FILE" | tail -1 | tr -d '\r' | tr -d "'\"")
+fi
 PORT="${PORT:-8000}"
 WORKERS="${WORKERS:-2}"
 ROOT_PATH="${ROOT_PATH:-/it-tracker}"
