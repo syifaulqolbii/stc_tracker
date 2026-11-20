@@ -9,7 +9,7 @@ Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducib
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 533,415 B | `69470831c31e43f45a86adc4d914ed61107c76e0ded81a50a9ab77c7017ecc29` |
+| `it-tracker-src.tgz` | 532,243 B | `fa8916d9836371ce1181f4b599b3d0aa11dc2110df90e535e04cd528ce5902b0` |
 | `it-tracker-py310-wheels.tgz` | 17,083,860 B | `b0d3474eda0f4f97b27c88f73e8b76d52af5f30a7e42f573a48778a3b27bc474` |
 | `db-bootstrap.sql` | 10,888 B | `fa93d1393e168607d27152d3359544714493c8b074c261fcef55b9c174a55ff8` |
 
