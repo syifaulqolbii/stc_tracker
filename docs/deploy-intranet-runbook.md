@@ -10,7 +10,7 @@ Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducib
 | File | Ukuran | SHA-256 |
 |---|---|---|
 | `it-tracker-src.tgz` | 541,843 B | `f6e7a518131eb7966de9738a27b090f3fa94a234390b8c62d7350e81823484c7` |
-| `it-tracker-py310-wheels.tgz` | 17,083,860 B | `b0d3474eda0f4f97b27c88f73e8b76d52af5f30a7e42f573a48778a3b27bc474` |
+| `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
 ---
@@ -106,11 +106,11 @@ cd /apps/www/it-tracker
 mkdir -p logs run media
 cp /apps/www/db-bootstrap.sql .
 chmod +x deploy/native/*.sh scripts/*.sh
-ls wheels/*.whl | wc -l          # 34
+ls wheels/*.whl | wc -l          # 35
 ls deploy/native scripts
 ```
 
-✅ `34`; daftar berisi `apache-it-tracker.conf ctl.sh check-db.sh env.example verify.sh watchdog.sh` dan `apply-db-bootstrap.py build-db-bootstrap.sh backup-db.sh clear-db.sh health-alert-cron.sh update-waha.sh`.
+✅ `35`; daftar berisi `apache-it-tracker.conf ctl.sh check-db.sh env.example verify.sh watchdog.sh` dan `apply-db-bootstrap.py build-db-bootstrap.sh backup-db.sh clear-db.sh health-alert-cron.sh update-waha.sh`.
 
 Catatan: bit `+x` sudah ikut di arsip (mode 775). `chmod +x` di atas tetap dijalankan sebagai jaring pengaman.
 
@@ -123,7 +123,9 @@ Catatan: bit `+x` sudah ikut di arsip (mode 775). `chmod +x` di atas tetap dijal
 /apps/www/it-tracker/venv/bin/pip install --no-index --find-links /apps/www/it-tracker/wheels -r /apps/www/it-tracker/requirements.txt
 ```
 
-✅ `Python 3.10.14`, `ok`, lalu `Successfully installed ...` **tanpa** kalimat "Looking in indexes" yang sukses (kalau ada jaringan, `--no-index` tetap memaksa offline; yang penting tidak ada error).
+✅ `Python 3.10.14`, `ok`, lalu `Successfully installed ...` **tanpa** kalimat "Looking in indexes" (ada jaringan pun `--no-index` memaksa offline; yang penting tidak ada error).
+
+Wajib muncul `exceptiongroup` di daftar `Successfully installed`. Wheel itu **tidak** diturunkan otomatis oleh pip versi lama pada Python 3.10, padahal `anyio` meng-import-nya saat runtime (`if sys.version_info < (3, 11): from exceptiongroup import BaseExceptionGroup`) — kalau tidak terpasang, app gagal start. Bundle di atas sudah memuatnya.
 
 Kalau `venv` gagal `ensurepip`:
 
