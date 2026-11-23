@@ -1,15 +1,15 @@
 # Panduan manual — Deploy IT Tracker di VM intranet (PuTTY + WinSCP)
 
-Acuan commit: `main` @ `50fa151` untuk **kode + artefak deploy** (tarball `it-tracker-src.tgz` dibangun dari sana; commit runbook sesudahnya hanya dokumentasi). Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
+Acuan commit: `main` @ `8a10716` untuk **kode + artefak deploy** (tarball `it-tracker-src.tgz` dibangun dari sana; commit runbook sesudahnya hanya dokumentasi). Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
 > **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv), lalu **Task 2** (butuh `venv/bin/python`, karena VM tidak punya `psql`), lalu **4A–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
 > Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
 
-Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducible dengan `git archive --format=tar 50fa151 | gzip -9n > offline/it-tracker-src.tgz` — hash di bawah bisa diverifikasi ulang:
+Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducible dengan `git archive --format=tar 8a10716 | gzip -9n > offline/it-tracker-src.tgz` — hash di bawah bisa diverifikasi ulang:
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 541,827 B | `ca708cf0b0d179b9b8f9a155f5463fe435fb03f74ffc1d6b4aefc3fc3af987f9` |
+| `it-tracker-src.tgz` | 541,843 B | `f6e7a518131eb7966de9738a27b090f3fa94a234390b8c62d7350e81823484c7` |
 | `it-tracker-py310-wheels.tgz` | 17,083,860 B | `b0d3474eda0f4f97b27c88f73e8b76d52af5f30a7e42f573a48778a3b27bc474` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
@@ -112,7 +112,7 @@ ls deploy/native scripts
 
 ✅ `34`; daftar berisi `apache-it-tracker.conf ctl.sh check-db.sh env.example verify.sh watchdog.sh` dan `apply-db-bootstrap.py build-db-bootstrap.sh backup-db.sh clear-db.sh health-alert-cron.sh update-waha.sh`.
 
-Catatan: `chmod +x` wajib — tarball dari Windows menyimpan mode 644.
+Catatan: bit `+x` sudah ikut di arsip (mode 775). `chmod +x` di atas tetap dijalankan sebagai jaring pengaman.
 
 ### 3C. venv + install offline
 
