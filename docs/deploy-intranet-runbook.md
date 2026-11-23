@@ -174,6 +174,8 @@ Isi yang **wajib** diganti di `vi`:
 | `WAHA_WEBHOOK_SECRET` | hasil `openssl` #3 |
 | `ACCESS_CODES` | kode akses FE (mis. `STC2026`) |
 | `ALLOWED_ORIGINS` | origin FE VM, mis. `https://10.59.129.90` |
+| `RATE_LIMIT_RPM` | batas request per IP per menit untuk endpoint API (biarkan `120`) |
+| `LOGIN_RATE_LIMIT` | percobaan login per IP per menit (default app 5; `env.example` memakai 10) |
 | `BACKEND_PUBLIC_URL` | **biarkan** `https://10.59.129.89/it-tracker` |
 | `MEDIA_DIR` | **biarkan** `/apps/www/it-tracker/media` |
 | `OPENROUTER_API_KEY`, `LLM_BASE_URL`, `TELEGRAM_BOT_TOKEN` | kosongkan (egress diblokir) |
@@ -298,6 +300,7 @@ Tempel **isi** `apache-it-tracker.conf` (7 baris konfigurasi, bukan komentar hea
 ProxyRequests Off
 ProxyPreserveHost On
 ProxyTimeout 120
+ProxyAddHeaders On
 
 ProxyPass        /it-tracker/ http://127.0.0.1:8000/
 ProxyPassReverse /it-tracker/ http://127.0.0.1:8000/
@@ -333,6 +336,18 @@ curl -skI https://127.0.0.1/it-tracker | head -3
 ```
 
 ✅ `200`, `200`, `200`; baris pertama header `/it-tracker` → `302` + `Location: /it-tracker/docs`.
+
+Cek X-Forwarded-For sampai ke app (penting untuk rate limit per IP — tanpa ini semua klien terlihat `127.0.0.1`):
+
+```bash
+curl -sk -H 'X-Forwarded-For: 10.99.99.99' -o /dev/null -w '%{http_code}\n' https://127.0.0.1/it-tracker/api/cases
+sleep 1
+grep '10.99.99.99' /apps/www/it-tracker/logs/app.log | tail -1
+```
+
+✅ `401` (tanpa API key, wajar) lalu muncul baris akses uvicorn `INFO: 10.99.99.99:0 - "GET /api/cases ..."`. Kalau tidak muncul, `ProxyAddHeaders` tidak aktif.
+
+Catatan: baris log milik app (`GET /it-tracker/... 401 0.00s [id]`) **tidak** memuat IP klien — yang memuat IP adalah baris akses uvicorn (`INFO: <ip>:<port> - "..."`). Jangan pakai baris app untuk cek ini.
 `503` = proxy jalan tapi app mati (`ctl.sh status`). `404` = snippet tidak di vhost yang benar.
 
 ### 5G. Uji dari PC kantor (browser)
