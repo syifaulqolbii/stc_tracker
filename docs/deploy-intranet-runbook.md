@@ -574,6 +574,24 @@ Dijalankan dengan `main-v1-1.py` asli + uvicorn lokal (`--root-path /it-tracker`
 | `scripts/apply-db-bootstrap.py` (via `.env` dan via `--dsn`) | `search_path: dc_schema`, 11 tabel |
 | `deploy/native/check-db.sh` | gate lulus pada schema kosong (`tables (0)`) dan setelah bootstrap (`tables (11)`) |
 
+### Rehearsal lengkap dari tarball final
+
+`it-tracker-src.tgz` + `it-tracker-py310-wheels.tgz` diekstrak ke layout VM (bukan dari working tree), lalu seluruh Task 3–4 dijalankan terhadap PostgreSQL sungguhan:
+
+| Langkah | Hasil |
+|---|---|
+| Ekstrak 2 tarball | 35 wheel, 7 skrip `deploy/native/` dengan bit `+x` |
+| `preflight.sh` | semua cek inti lulus (kecuali `exceptiongroup` — hanya karena host uji Python 3.13, marker `<3.11`) |
+| `check-db.sh` sebelum bootstrap | `tables (0)`, `can_use=True`, `can_create=True` |
+| `apply-db-bootstrap.py` | `search_path: dc_schema`, `applied` |
+| `check-db.sh` sesudahnya | `tables (11)`, seed benar, `public leaks=0` |
+| `ctl.sh start` | `started (pid …)` setelah `/health` 200 |
+| `verify.sh` | `OK: http://127.0.0.1:8185` (rc=0) |
+| Endpoint | `/api/cases`, `/api/areas`, `/api/sumber-tickets` → 401 tanpa key, 200 dengan key |
+| Prefix | `/it-tracker/health` di uvicorn → 404 (sesuai tabel prefix) |
+| `watchdog.sh` 2× | kegagalan 1 → `run/watchdog.fail=1`; kegagalan 2 → restart → `/health` 200 |
+| `ctl.sh restart` / `stop` | `stopped`→`started`→`running`; setelah stop `/health` 000 |
+
 Sesudah bootstrap, app asli (`main-v1-1.py`) dijalankan terhadap database itu: `/health` → `db.status=ok`, `/api/cases`, `/api/areas`, `/api/sumber-tickets`, `/api/jenis-cases`, `/api/groups`, `/api/solver-contacts`, `/api/reminders/pending` → **200** dengan `X-API-Key` dan **401** tanpa key; `POST /api/solver-contacts` → 201; `alert_state` tetap di `dc_schema`, `public` bersih.
 
 ## Lampiran — kalau ada yang gagal
