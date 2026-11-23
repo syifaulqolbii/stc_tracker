@@ -205,6 +205,15 @@ print('host=',i['host'],'db=',i['dbname'],'user=',i['user'],'search_path=',i['op
 
 ✅ `host= 10.53.142.244 db= namadb user= usernamedb search_path= -csearch_path=dc_schema`. Kalau `host` bukan IP itu, password belum di-encode dengan benar.
 
+### 4A-bis. Preflight satu perintah (opsional, disarankan)
+
+```bash
+cd /apps/www/it-tracker
+APP_DIR=/apps/www/it-tracker deploy/native/preflight.sh
+```
+
+Memeriksa sekaligus: Python 3.10, isi `APP_DIR`, 35 wheel + `exceptiongroup`, bit `+x`, venv & semua import, mode `.env`, serta hasil parse DSN (host harus `10.53.142.244`, `options` harus memuat `dc_schema`). ✅ baris terakhir `semua cek inti lulus`. Paste output-nya kalau ada yang `FAIL`.
+
 ### 4B. Start
 
 ```bash
