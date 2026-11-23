@@ -8,6 +8,11 @@
 set -uo pipefail
 APP_DIR="${APP_DIR:-/apps/www/it-tracker}"
 PY310="${PY310:-/apps/Python3.10/bin/python3.10}"
+# Direktori kerja untuk file stderr sementara; tanpa ini redirect gagal saat
+# `run/` belum ada dan pesan error aslinya hilang.
+TMPD="${TMPDIR:-/tmp}"
+[[ -d "$TMPD" && -w "$TMPD" ]] || TMPD="$APP_DIR"
+mkdir -p "$APP_DIR/run" 2>/dev/null || TMPD="/tmp"
 fails=0
 warns=0
 
@@ -49,19 +54,19 @@ echo "== venv"
 VPY="$APP_DIR/venv/bin/python"
 if [[ -x "$VPY" ]]; then
   ok "$("$VPY" -V 2>&1 | tr -d '\r' | head -1)"
-  err="$APP_DIR/run/.pf-imp.err"
+  err="$(mktemp "${TMPD%/}/pf-imp.XXXXXX" 2>/dev/null || echo "${TMPD%/}/pf-imp.err")"
   if "$VPY" -c "import fastapi, uvicorn, httpx, psycopg, psycopg_pool, jwt, openpyxl, pydantic, exceptiongroup" 2>"$err"; then
     ok "semua import dependency"
   else
     bad "import gagal: $(tr '\n' ' ' < "$err" | tail -c 180)"
   fi
-  err="$APP_DIR/run/.pf-app.err"
+  err="$(mktemp "${TMPD%/}/pf-app.XXXXXX" 2>/dev/null || echo "${TMPD%/}/pf-app.err")"
   if MEDIA_DIR="$APP_DIR/media" "$VPY" -c "import importlib.util as u; s=u.spec_from_file_location('m','main-v1-1.py'); m=u.module_from_spec(s); s.loader.exec_module(m)" 2>"$err"; then
     ok "app import (main-v1-1.py)"
   else
     bad "app import gagal: $(grep -E 'Error|Exception' "$err" | tail -1)"
   fi
-  rm -f "$APP_DIR/run/.pf-imp.err" "$APP_DIR/run/.pf-app.err"
+  rm -f "$APP_DIR/run/.pf-imp.err" "$APP_DIR/run/.pf-app.err" "$TMPD"/pf-imp.* "$TMPD"/pf-app.* 2>/dev/null || true
 else
   bad "venv/bin/python tidak ada — jalankan 3C"
 fi

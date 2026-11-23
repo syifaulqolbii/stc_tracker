@@ -127,6 +127,13 @@ Catatan: bit `+x` sudah ikut di arsip (mode 775). `chmod +x` di atas tetap dijal
 
 Wajib muncul `exceptiongroup` di daftar `Successfully installed`. Wheel itu **tidak** diturunkan otomatis oleh pip versi lama pada Python 3.10, padahal `anyio` meng-import-nya saat runtime (`if sys.version_info < (3, 11): from exceptiongroup import BaseExceptionGroup`) — kalau tidak terpasang, app gagal start. Bundle di atas sudah memuatnya.
 
+Kalau `exceptiongroup` **tidak** muncul di `Successfully installed` (pip lama mengevaluasi marker dengan versi lain), pasang eksplisit dari bundle:
+
+```bash
+/apps/www/it-tracker/venv/bin/pip install --no-index --find-links /apps/www/it-tracker/wheels exceptiongroup
+/apps/www/it-tracker/venv/bin/python -c "import exceptiongroup; print('exceptiongroup ok')"
+```
+
 Kalau `venv` gagal `ensurepip`:
 
 ```bash
