@@ -1,15 +1,15 @@
 # Panduan manual — Deploy IT Tracker di VM intranet (PuTTY + WinSCP)
 
-Acuan commit: `main` @ `371ce77` untuk **kode + artefak deploy** (tarball dibangun dari HEAD tanpa `docs/` & `.github/`, supaya commit dokumentasi tidak mengubah hash). Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
+Acuan commit: `main` @ `371ce77` untuk **kode + artefak deploy**; tarball dibangun dari isi repo (`git ls-files`) tanpa `docs/` & `.github/`. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
 > **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv), lalu **Task 2** (butuh `venv/bin/python`, karena VM tidak punya `psql`), lalu **4A–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
 > Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
 
-Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducible dengan `git archive --format=tar HEAD -- . ':!docs' ':!.github' | gzip -9n > offline/it-tracker-src.tgz` — hash di bawah bisa diverifikasi ulang:
+Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducible dengan `python scripts/build-src-tarball.py offline/it-tracker-src.tgz` (mtime/mode/uid dipatok, header gzip `mtime=0`, tanpa `docs/` & `.github/`) sehingga hash-nya stabil antar-build dan bisa diverifikasi ulang:
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 468,448 B | `39c1588aa962c6a30c87e50a041a45e60d312f5b84850b31a71c06402c0a6f9d` |
+| `it-tracker-src.tgz` | 426,376 B | `d11fd6f3e1fc45006ad45cd3e67f965320a5df028f5e0a8b189bb72e8b4ce197` |
 | `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
