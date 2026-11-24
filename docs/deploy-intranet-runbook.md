@@ -1,6 +1,6 @@
 # Panduan manual — Deploy IT Tracker di VM intranet (PuTTY + WinSCP)
 
-Acuan commit: `main` @ `371ce77` untuk **kode + artefak deploy**; tarball dibangun dari isi repo (`git ls-files`) tanpa `docs/` & `.github/`. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
+Acuan artefak: **hash SHA-256 di tabel bawah**, bukan commit — tarball dibangun dari isi repo (`git ls-files`) tanpa `docs/` & `.github/`, jadi commit boleh bergerak selama hash cocok. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
 > **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv) → **3E** (`.env`, sumber `DATABASE_URL`) → **Task 2** (butuh `venv/bin/python` + `DATABASE_URL`, karena VM tidak punya `psql`) → **4B–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
 > Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
