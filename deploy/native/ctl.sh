@@ -20,7 +20,17 @@ if [[ -z "${PORT:-}" && -r "${ENV_FILE:-}" ]]; then
   PORT=$(sed -n 's/^[[:space:]]*PORT=//p' "$ENV_FILE" | tail -1 | tr -d '\r' | tr -d "'\"")
 fi
 PORT="${PORT:-8000}"
-WORKERS="${WORKERS:-2}"
+# 1 worker: _rate_buckets dan _contact_cache adalah state in-memory per proses.
+# Dengan N worker, RATE_LIMIT_RPM dan LOGIN_RATE_LIMIT efektif jadi N kali
+# lipat (pembatas brute-force kode akses ikut bocor), tanpa error apa pun.
+# Handler sinkron tetap konkuren lewat threadpool anyio, jadi throughput tidak
+# hilang. Naikkan hanya kalau rate limit memang mau dikali.
+# Dibaca dari env lalu .env (pola sama dengan PORT) supaya nilai di .env benar-
+# benar dipakai, bukan diam-diam diabaikan.
+if [[ -z "${WORKERS:-}" && -r "${ENV_FILE:-}" ]]; then
+  WORKERS=$(sed -n 's/^[[:space:]]*WORKERS=//p' "$ENV_FILE" | tail -1 | tr -d '\r' | tr -d "'\"")
+fi
+WORKERS="${WORKERS:-1}"
 ROOT_PATH="${ROOT_PATH:-/it-tracker}"
 HEALTH_WAIT="${HEALTH_WAIT:-45}"      # detik menunggu /health setelah start
 

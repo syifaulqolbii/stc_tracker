@@ -9,7 +9,7 @@ Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducib
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 427,360 B | `e4ccd43cc50d0a1869ee772cb8dca1f344e25f19e94c7a6094c3978f1cba05c3` |
+| `it-tracker-src.tgz` | 427,640 B | `5b7ab5517dd49b6822a0fe33a765d6dfc54577d68d6f03815cc897a65decb84b` |
 | `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
@@ -249,6 +249,8 @@ deploy/native/ctl.sh status
 
 ✅ `started (pid …)` lalu `running (pid …)`.
 🛑 `GAGAL start` → baca `tail -40 logs/app.log`; penyebab umum: `DATABASE_URL` salah kutip, atau `MEDIA_DIR` dihapus.
+
+`ctl.sh` menjalankan **1 worker** (bisa di-override lewat `WORKERS=` di env atau `.env`). Alasannya bukan selera: `_rate_buckets` dan `_contact_cache` di `main-v1-1.py` adalah state in-memory per proses, jadi `RATE_LIMIT_RPM` dan `LOGIN_RATE_LIMIT` berlaku **kali jumlah worker**. Dengan 2 worker, pembatas brute-force kode akses diam-diam jadi 2× tanpa satu pun pesan error. Handler sinkron tetap konkuren (threadpool anyio), jadi menaikkan `WORKERS` hanya menambah kuota rate limit, bukan throughput nyata.
 
 ### 4C. Health
 
