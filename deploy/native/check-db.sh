@@ -14,13 +14,18 @@ import os, sys
 import psycopg
 
 app_dir, dsn = sys.argv[1], sys.argv[2]
-if not dsn:
-    for line in open(os.path.join(app_dir, ".env")).read().splitlines():
-        if line.strip().startswith("DATABASE_URL="):
+env_path = os.path.join(app_dir, ".env")
+if not dsn and os.path.isfile(env_path):
+    for line in open(env_path).read().splitlines():
+        line = line.strip()
+        if line.startswith("DATABASE_URL="):
             dsn = line.split("=", 1)[1].strip().strip('"').strip("'")
             break
 if not dsn:
-    sys.exit("FAIL: DATABASE_URL tidak ditemukan")
+    dsn = os.environ.get("DATABASE_URL", "")
+if not dsn:
+    sys.exit(f"FAIL: DATABASE_URL tidak ditemukan di {env_path} maupun environment "
+             f"— buat .env (runbook 3E) atau jalankan: check-db.sh '<dsn>'")
 
 q = lambda cur, sql: (cur.execute(sql), cur.fetchall())[1]
 with psycopg.connect(dsn, connect_timeout=10) as conn, conn.cursor() as cur:

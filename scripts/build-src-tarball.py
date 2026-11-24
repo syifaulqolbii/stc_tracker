@@ -52,8 +52,10 @@ def main() -> int:
             info.mode = 0o755 if name.endswith((".sh", ".py")) or name in EXEC_EXTRA else 0o644
             with open(name, "rb") as fh:
                 tf.addfile(info, fh)
+    # filename="" wajib: GzipFile menyalin nama fileobj ke header (FLG.FNAME),
+    # sehingga hash ikut berubah hanya karena output ditulis ke nama lain.
     with open(out_path, "wb") as out, gzip.GzipFile(
-        fileobj=out, mode="wb", compresslevel=9, mtime=0
+        fileobj=out, mode="wb", compresslevel=9, mtime=0, filename=""
     ) as gz:
         gz.write(buf.getvalue())
 

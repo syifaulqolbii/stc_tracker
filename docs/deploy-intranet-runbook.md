@@ -2,14 +2,14 @@
 
 Acuan commit: `main` @ `371ce77` untuk **kode + artefak deploy**; tarball dibangun dari isi repo (`git ls-files`) tanpa `docs/` & `.github/`. Kerjakan **berurutan**; setiap langkah punya "✅ harus terlihat". Kalau tidak cocok, **berhenti** dan lapor isi layar.
 
-> **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv), lalu **Task 2** (butuh `venv/bin/python`, karena VM tidak punya `psql`), lalu **4A–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
+> **Urutan eksekusi:** **3A → 3B → 3C → 3D** (kode + venv) → **3E** (`.env`, sumber `DATABASE_URL`) → **Task 2** (butuh `venv/bin/python` + `DATABASE_URL`, karena VM tidak punya `psql`) → **4B–4D** → **5** → **6** → **7** (bila gate lolos) → **8** (opsional) → **9**.
 > Kalau PC-mu punya `psql` dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan lebih dulu (lihat 2 "Alternatif psql").
 
 Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducible dengan `python scripts/build-src-tarball.py offline/it-tracker-src.tgz` (mtime/mode/uid dipatok, header gzip `mtime=0`, tanpa `docs/` & `.github/`) sehingga hash-nya stabil antar-build dan bisa diverifikasi ulang:
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 426,376 B | `d11fd6f3e1fc45006ad45cd3e67f965320a5df028f5e0a8b189bb72e8b4ce197` |
+| `it-tracker-src.tgz` | 426,653 B | `222119b281759287785c69324b470188faa69c7543ec8bc02da2fa25dd713b52` |
 | `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
@@ -29,7 +29,9 @@ Catatan: semua perintah di bawah dijalankan **di PuTTY** kecuali yang ditandai *
 
 ## Task 2 — bootstrap schema `dc_schema`
 
-Setelah Task 3 (venv) selesai, Task 2 dieksekusi **tanpa psql** memakai helper repo. Urutan riil: **Task 3 dulu, lalu Task 2**, karena `deploy/native/check-db.sh` dan `scripts/apply-db-bootstrap.py` memakai `venv/bin/python`.
+Setelah Task 3 (venv) selesai, Task 2 dieksekusi **tanpa psql** memakai helper repo. Urutan riil: **Task 3 dulu, lalu 3E (`.env`), lalu Task 2**, karena kedua helper memakai `venv/bin/python` **dan** mengambil `DATABASE_URL` dari `.env`.
+
+`check-db.sh` menerima DSN sebagai argumen pertama (`check-db.sh '<dsn>'`) dan juga membaca environment `DATABASE_URL`; `.env` hanya jalur default.
 
 Kalau kamu sudah punya `psql` di PC sendiri dan bisa menjangkau `10.53.142.244`, Task 2 boleh dikerjakan sekarang dengan psql (lihat bagian "Alternatif psql" di bawah).
 
@@ -110,9 +112,9 @@ ls wheels/*.whl | wc -l          # 35
 ls deploy/native scripts
 ```
 
-✅ `35`; daftar berisi `apache-it-tracker.conf ctl.sh check-db.sh env.example verify.sh watchdog.sh` dan `apply-db-bootstrap.py build-db-bootstrap.sh backup-db.sh clear-db.sh health-alert-cron.sh update-waha.sh`.
+✅ `35`; daftar berisi `apache-it-tracker.conf check-db.sh ctl.sh env.example preflight.sh verify.sh watchdog.sh` dan `apply-db-bootstrap.py backup-db.sh build-db-bootstrap.sh build-src-tarball.py clear-db.sh health-alert-cron.sh update-waha.sh`.
 
-Catatan: bit `+x` sudah ikut di arsip (mode 775). `chmod +x` di atas tetap dijalankan sebagai jaring pengaman.
+Catatan: bit `+x` sudah ikut di arsip (mode 755 pada `*.sh`/`*.py`, 644 sisanya). `chmod +x` di atas tetap dijalankan sebagai jaring pengaman.
 
 ### 3C. venv + install offline
 
@@ -153,13 +155,17 @@ MEDIA_DIR=/apps/www/it-tracker/media venv/bin/python -c "import importlib.util a
 ✅ `imports ok`, `app import ok`.
 🛑 Kalau muncul `FileNotFoundError: /app/media` → `MEDIA_DIR` tidak ter-set; ulangi perintah kedua apa adanya.
 
-Sekarang **kembali ke Task 2** (butuh venv).
+### 3E. Buat `.env` (prasyarat Task 2)
+
+Kerjakan **4A** sekarang; isinya lengkap di sana. Tanpa `.env`, `check-db.sh` berhenti dengan `FAIL: DATABASE_URL tidak ditemukan di ... maupun environment`, dan `apply-db-bootstrap.py` menolak jalan. Alternatif tanpa `.env`: `deploy/native/check-db.sh '<dsn>'` (argumen pertama) dan `venv/bin/python scripts/apply-db-bootstrap.py db-bootstrap.sql --dsn '<dsn>'`.
+
+Sekarang **kembali ke Task 2** (butuh venv + `.env`).
 
 ---
 
 ## Task 4 — jalankan di loopback
 
-### 4A. Buat `.env`
+### 4A. Buat `.env` (sudah dikerjakan di 3E — lewati bila selesai)
 
 ```bash
 cd /apps/www/it-tracker
