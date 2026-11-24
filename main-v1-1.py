@@ -1333,7 +1333,10 @@ class ReminderIn(BaseModel):
 
 class ReplyAttachment(BaseModel):
     filename: str = Field(..., description="Nama file asli (ekstensi menentukan tipe)")
-    mimetype: str = Field(..., description="MIME: image/jpeg, image/png, image/webp, video/mp4, application/pdf")
+    mimetype: str = Field(..., description=("MIME: image/jpeg, image/png, image/webp, video/mp4, "
+                                            "application/pdf, text/plain, text/csv, "
+                                            "application/vnd.ms-excel, "
+                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
     data_base64: str = Field(..., description="Isi file base64 (maks 5 MB decoded per file)")
 
 class ReplyIn(BaseModel):
@@ -1344,7 +1347,10 @@ class ReplyIn(BaseModel):
 
 
 REPLY_MIMES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
-               "video/mp4": ".mp4", "application/pdf": ".pdf"}
+               "video/mp4": ".mp4", "application/pdf": ".pdf",
+               "text/plain": ".txt", "text/csv": ".csv",
+               "application/vnd.ms-excel": ".xls",
+               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx"}
 
 REPLY_MAX_BYTES = 5 * 1024 * 1024  # maks decoded bytes per file (5 MB)
 
@@ -3469,7 +3475,9 @@ async def serve_media_file(filename: str):
     media_types = {
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
         ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4",
-        ".pdf": "application/pdf",
+        ".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/csv",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
     return FileResponse(filepath, media_type=media_types.get(ext, "application/octet-stream"))
 
