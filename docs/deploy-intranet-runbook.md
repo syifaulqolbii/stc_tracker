@@ -9,7 +9,7 @@ Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducib
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 427,640 B | `5b7ab5517dd49b6822a0fe33a765d6dfc54577d68d6f03815cc897a65decb84b` |
+| `it-tracker-src.tgz` | 427,859 B | `9c30bb49dda75aaa7745e3f401a36fc1268434039793ee0bb10b995fba5a872e` |
 | `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
@@ -49,7 +49,8 @@ deploy/native/check-db.sh            # pakai DATABASE_URL dari .env
 | Output | Arti | Tindakan |
 |---|---|---|
 | `FAIL: schema dc_schema belum ada` | schema belum dibuat | minta DBA: `CREATE SCHEMA dc_schema AUTHORIZATION usernamedb;` |
-| `FAIL: role tidak punya USAGE/CREATE` | privilege kurang | minta DBA: `GRANT USAGE, CREATE ON SCHEMA dc_schema TO usernamedb;` |
+| `FAIL: role tidak punya USAGE pada dc_schema` | privilege kurang | minta DBA: `GRANT USAGE ON SCHEMA dc_schema TO usernamedb;` |
+| `FAIL: role tidak punya CREATE pada dc_schema` | create hanya wajib sebelum bootstrap | minta DBA: `GRANT CREATE ON SCHEMA dc_schema TO usernamedb;` — setelah 11 tabel ada, USAGE saja cukup |
 | `FAIL: dc_schema berisi tabel di luar milik app (...)` | schema dipakai aplikasi lain | **jangan** bootstrap; pakai schema/DB lain |
 | `FAIL: N objek app bocor ke schema public` | sisa deploy lama di `public` | pindahkan/bersihkan dulu, kalau tidak akan ada duplikat |
 | `gate: OK (bootstrap parsial — N/11 tabel, kurang: ...)` | 2B pernah gagal di tengah | ulangi 2B; semua DDL `IF NOT EXISTS`, aman |

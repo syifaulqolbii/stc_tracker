@@ -59,8 +59,13 @@ with psycopg.connect(dsn, connect_timeout=10) as conn, conn.cursor() as cur:
     if leak:
         sys.exit(f"FAIL: {leak} objek app bocor ke schema public"
                  f" — bersihkan dulu, bootstrap akan membuat duplikat di dc_schema")
-    if not use or not create:
-        sys.exit("FAIL: role tidak punya USAGE/CREATE pada dc_schema — minta DBA")
+    # CREATE hanya dibutuhkan saat bootstrap belum lengkap. Setelah 11 tabel ada,
+    # app cuma perlu USAGE (lifespan membuat alert_state, yang sudah terbuat),
+    # jadi jangan gagalkan verifikasi pasca-bootstrap hanya karena DBA mencabut CREATE.
+    if not use:
+        sys.exit("FAIL: role tidak punya USAGE pada dc_schema — minta DBA")
+    if set(tables) != EXPECTED and not create:
+        sys.exit("FAIL: role tidak punya CREATE pada dc_schema — dibutuhkan bootstrap; minta DBA")
     if set(tables) == EXPECTED:
         print("gate: OK (sudah ter-bootstrap)")
     elif tables:

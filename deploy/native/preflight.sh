@@ -79,13 +79,18 @@ if [[ -r "$APP_DIR/.env" ]]; then
   # (main-v1-1.py:305 `if not BACKEND_API_KEY: return`), dan JWT_SECRET kosong
   # membuat setiap restart meng-invalidate semua token. Placeholder GANTI dari
   # env.example juga tidak boleh lolos.
-  for k in DATABASE_URL BACKEND_API_KEY JWT_SECRET WAHA_WEBHOOK_SECRET MEDIA_DIR BACKEND_PUBLIC_URL ACCESS_CODES; do
+  for k in DATABASE_URL BACKEND_API_KEY JWT_SECRET WAHA_WEBHOOK_SECRET MEDIA_DIR BACKEND_PUBLIC_URL ACCESS_CODES ALLOWED_ORIGINS; do
     v=$(sed -n "s/^$k=//p" "$APP_DIR/.env" | tail -1 | tr -d '\r' | tr -d "'\"")
     if ! grep -q "^$k=" "$APP_DIR/.env"; then bad "$k tidak ada di .env"
     elif [[ -z "$v" ]]; then bad "$k kosong"
     elif [[ "$v" == *GANTI* ]]; then bad "$k masih placeholder GANTI"
     else ok "$k terisi"; fi
   done
+  # WAHA belum ada (B1/B2): placeholder tidak memblokir start, tapi harus
+  # kelihatan supaya tidak jadi bug misterius saat WAHA dipasang nanti.
+  if grep -qE '^WAHA_API_KEY=(|GANTI)$' "$APP_DIR/.env"; then
+    warn "WAHA_API_KEY kosong/placeholder — WAHA belum dipakai, isi sebelum Task 7"
+  else ok "WAHA_API_KEY terisi"; fi
   # CRLF (file .env yang diedit/diupload dari Windows) membuat nilai berakhir
   # dengan \r: DSN dan API key jadi tidak cocok tanpa error yang jelas.
   if grep -q $'\r' "$APP_DIR/.env"; then
