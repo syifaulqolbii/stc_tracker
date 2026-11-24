@@ -9,7 +9,7 @@ Artefak yang harus ada di PC (folder `offline/` repo). Tarball dibuat reproducib
 
 | File | Ukuran | SHA-256 |
 |---|---|---|
-| `it-tracker-src.tgz` | 426,653 B | `222119b281759287785c69324b470188faa69c7543ec8bc02da2fa25dd713b52` |
+| `it-tracker-src.tgz` | 427,360 B | `e4ccd43cc50d0a1869ee772cb8dca1f344e25f19e94c7a6094c3978f1cba05c3` |
 | `it-tracker-py310-wheels.tgz` | 17,079,114 B | `f7fb7d943c71ae0423c1d3c23a92ef0a58cf625decd422db4e1fb82cfc5257d1` |
 | `db-bootstrap.sql` | 10,678 B | `143e029d841b58716d2dffb1d34edbb2ffa6157858526926f3a225c59f114bb1` |
 
@@ -42,9 +42,17 @@ cd /apps/www/it-tracker
 deploy/native/check-db.sh            # pakai DATABASE_URL dari .env
 ```
 
-✅ Output: `user=usernamedb db=namadb search_path=...`, `can_use=True can_create=True`, `dc_schema tables (0): -`, `public leaks=0`.
+✅ Output: `user=usernamedb db=namadb search_path=...`, `can_use=True can_create=True`, `dc_schema tables (0): -`, `public leaks=0`, `gate: OK (siap bootstrap)`.
 
-🛑 **STOP** bila `dc_schema tables` **tidak** kosong (schema dipakai aplikasi lain), atau `FAIL: schema dc_schema belum ada` (minta DBA membuat `CREATE SCHEMA dc_schema AUTHORIZATION usernamedb;`), atau `can_create=False`.
+🛑 **STOP** bila skrip keluar non-zero. Sejak `bc122be` skrip itu sendiri yang menolak, jadi jangan lanjut ke 2B apa pun yang tercetak:
+
+| Output | Arti | Tindakan |
+|---|---|---|
+| `FAIL: schema dc_schema belum ada` | schema belum dibuat | minta DBA: `CREATE SCHEMA dc_schema AUTHORIZATION usernamedb;` |
+| `FAIL: role tidak punya USAGE/CREATE` | privilege kurang | minta DBA: `GRANT USAGE, CREATE ON SCHEMA dc_schema TO usernamedb;` |
+| `FAIL: dc_schema berisi tabel di luar milik app (...)` | schema dipakai aplikasi lain | **jangan** bootstrap; pakai schema/DB lain |
+| `FAIL: N objek app bocor ke schema public` | sisa deploy lama di `public` | pindahkan/bersihkan dulu, kalau tidak akan ada duplikat |
+| `gate: OK (bootstrap parsial — N/11 tabel, kurang: ...)` | 2B pernah gagal di tengah | ulangi 2B; semua DDL `IF NOT EXISTS`, aman |
 
 ### 2B. Terapkan bootstrap
 
@@ -62,7 +70,7 @@ deploy/native/check-db.sh
 ```
 
 ✅ `dc_schema tables (11): alert_state, areas, cases, jenis_cases, progress_updates, regionals, reminder_log, solver_contacts, sumber_tickets, wa_groups, wa_messages`
-`sumber_tickets: ['Grapari', 'STC', 'Web IT']`, `jenis_cases: ['Mobile', 'Non AO', 'Non Order']`, `alert_state rows: 0`, `public leaks=0`.
+`sumber_tickets: ['Grapari', 'STC', 'Web IT']`, `jenis_cases: ['Mobile', 'Non AO', 'Non Order']`, `alert_state rows: 0`, `public leaks=0`, `gate: OK (sudah ter-bootstrap)`.
 
 ### Alternatif psql (kalau PC-mu punya psql dan bisa ke 10.53.142.244)
 
@@ -227,7 +235,9 @@ cd /apps/www/it-tracker
 APP_DIR=/apps/www/it-tracker deploy/native/preflight.sh
 ```
 
-Memeriksa sekaligus: Python 3.10, isi `APP_DIR`, 35 wheel + `exceptiongroup`, bit `+x`, venv & semua import, mode `.env`, serta hasil parse DSN (host harus `10.53.142.244`, `options` harus memuat `dc_schema`). ✅ baris terakhir `semua cek inti lulus`. Paste output-nya kalau ada yang `FAIL`.
+Memeriksa sekaligus: Python 3.10, isi `APP_DIR`, 35 wheel + `exceptiongroup`, bit `+x`, venv & semua import, mode `.env`, **nilai wajib yang kosong / masih `GANTI`**, **akhiran baris CRLF**, serta hasil parse DSN (host harus `10.53.142.244`, `options` harus memuat `dc_schema`). ✅ baris terakhir `semua cek inti lulus`. Paste output-nya kalau ada yang `FAIL`.
+
+`BACKEND_API_KEY` kosong **mematikan seluruh auth** (`main-v1-1.py:305`: `if not BACKEND_API_KEY: return`), jadi baris `FAIL … kosong` di sini bukan peringatan gaya-gayaan — start akan membuat semua endpoint API terbuka.
 
 ### 4B. Start
 

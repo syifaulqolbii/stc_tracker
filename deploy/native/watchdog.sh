@@ -3,6 +3,12 @@
 set -uo pipefail
 APP_DIR="${APP_DIR:-/apps/www/it-tracker}"
 STATE="$APP_DIR/run/watchdog.fail"
+# PORT dibaca sama seperti ctl.sh (env, lalu .env). Kalau berbeda, watchdog
+# memeriksa port yang salah dan me-restart app sehat terus-menerus.
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
+if [[ -z "${PORT:-}" && -r "${ENV_FILE:-}" ]]; then
+  PORT=$(sed -n 's/^[[:space:]]*PORT=//p' "$ENV_FILE" | tail -1 | tr -d '\r' | tr -d "'\"")
+fi
 PORT="${PORT:-8000}"
 BASE="http://127.0.0.1:$PORT/health"   # langsung ke uvicorn: TANPA prefix
 

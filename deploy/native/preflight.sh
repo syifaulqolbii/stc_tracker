@@ -75,11 +75,24 @@ echo "== .env"
 if [[ -r "$APP_DIR/.env" ]]; then
   perm=$(stat -c '%a' "$APP_DIR/.env" 2>/dev/null || echo '?')
   [[ "$perm" == "600" ]] && ok ".env mode 600" || warn ".env mode $perm (harusnya 600)"
-  for k in DATABASE_URL BACKEND_API_KEY JWT_SECRET WAHA_WEBHOOK_SECRET MEDIA_DIR BACKEND_PUBLIC_URL; do
-    grep -q "^$k=" "$APP_DIR/.env" && ok "$k terisi" || bad "$k tidak ada di .env"
+  # Nilai kosong tidak cukup: BACKEND_API_KEY kosong mematikan seluruh auth
+  # (main-v1-1.py:305 `if not BACKEND_API_KEY: return`), dan JWT_SECRET kosong
+  # membuat setiap restart meng-invalidate semua token. Placeholder GANTI dari
+  # env.example juga tidak boleh lolos.
+  for k in DATABASE_URL BACKEND_API_KEY JWT_SECRET WAHA_WEBHOOK_SECRET MEDIA_DIR BACKEND_PUBLIC_URL ACCESS_CODES; do
+    v=$(sed -n "s/^$k=//p" "$APP_DIR/.env" | tail -1 | tr -d '\r' | tr -d "'\"")
+    if ! grep -q "^$k=" "$APP_DIR/.env"; then bad "$k tidak ada di .env"
+    elif [[ -z "$v" ]]; then bad "$k kosong"
+    elif [[ "$v" == *GANTI* ]]; then bad "$k masih placeholder GANTI"
+    else ok "$k terisi"; fi
   done
+  # CRLF (file .env yang diedit/diupload dari Windows) membuat nilai berakhir
+  # dengan \r: DSN dan API key jadi tidak cocok tanpa error yang jelas.
+  if grep -q $'\r' "$APP_DIR/.env"; then
+    bad ".env ber-CRLF — jalankan: sed -i 's/\\r$//' .env"
+  else ok ".env LF"
+  fi
   grep -q '^DATABASE_URL=.*search_path' "$APP_DIR/.env" && ok "search_path di DATABASE_URL" || bad "search_path hilang dari DATABASE_URL"
-  grep -q '^DATABASE_URL=.*GANTI' "$APP_DIR/.env" && bad "DATABASE_URL masih placeholder GANTI" || true
   if [[ -x "$VPY" ]]; then
     "$VPY" - "$APP_DIR/.env" <<'PY' && ok "DSN ter-parse & host benar"
 import sys

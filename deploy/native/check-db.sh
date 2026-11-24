@@ -28,6 +28,9 @@ if not dsn:
              f"— buat .env (runbook 3E) atau jalankan: check-db.sh '<dsn>'")
 
 q = lambda cur, sql: (cur.execute(sql), cur.fetchall())[1]
+EXPECTED = {"alert_state", "areas", "cases", "jenis_cases", "progress_updates",
+            "regionals", "reminder_log", "solver_contacts", "sumber_tickets",
+            "wa_groups", "wa_messages"}
 with psycopg.connect(dsn, connect_timeout=10) as conn, conn.cursor() as cur:
     user, db, sp = q(cur, "select current_user, current_database(), current_setting('search_path')")[0]
     print(f"user={user} db={db} search_path={sp}")
@@ -43,8 +46,28 @@ with psycopg.connect(dsn, connect_timeout=10) as conn, conn.cursor() as cur:
     leak = q(cur, "select count(*) from information_schema.tables where table_schema='public'"
                   " and table_name in ('cases','wa_messages','wa_groups')")[0][0]
     print(f"public leaks={leak}")
-    if len(tables) >= 11:
+    if len(tables) >= 11 and set(tables) <= EXPECTED:
         print("sumber_tickets:", [r[0] for r in q(cur, "select name from dc_schema.sumber_tickets order by 1")])
         print("jenis_cases:", [r[0] for r in q(cur, "select name from dc_schema.jenis_cases order by 1")])
         print("alert_state rows:", q(cur, "select count(*) from dc_schema.alert_state")[0][0])
+
+    # Gate Task 2 — dua kondisi yang harus menghentikan deploy, bukan sekadar dicetak.
+    extra = sorted(set(tables) - EXPECTED)
+    if extra:
+        sys.exit(f"FAIL: dc_schema berisi tabel di luar milik app ({', '.join(extra)})"
+                 f" — schema dipakai aplikasi lain, jangan bootstrap")
+    if leak:
+        sys.exit(f"FAIL: {leak} objek app bocor ke schema public"
+                 f" — bersihkan dulu, bootstrap akan membuat duplikat di dc_schema")
+    if not use or not create:
+        sys.exit("FAIL: role tidak punya USAGE/CREATE pada dc_schema — minta DBA")
+    if set(tables) == EXPECTED:
+        print("gate: OK (sudah ter-bootstrap)")
+    elif tables:
+        missing = sorted(EXPECTED - set(tables))
+        print(f"gate: OK (bootstrap parsial — {len(tables)}/11 tabel, kurang: {', '.join(missing)})"
+              f" — ulangi apply-db-bootstrap.py (idempoten)")
+    else:
+        print("gate: OK (siap bootstrap)")
 PY
+
