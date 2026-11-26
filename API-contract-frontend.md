@@ -1,6 +1,6 @@
 # API Contract — IT Tracker (untuk Tim Frontend)
 
-**Versi:** 1.37 · **Tanggal:** 17 November 2026 · **Backend:** FastAPI (`version="1.37.0"`) · **Base path:** `/api`
+**Versi:** 1.38 · **Tanggal:** 26 November 2026 · **Backend:** FastAPI (`version="1.38.0"`) · **Base path:** `/api`
 **Referensi:** PRD v1.5, schema-v1-2.sql, schema-multi-group.sql, schema-migration-group-default.sql
 
 > Catatan: backend FastAPI juga mengekspos dokumentasi interaktif otomatis di `GET /docs` (Swagger UI) dan skema mesin di `GET /openapi.json` — bisa diimpor ke Postman. Dokumen ini adalah kontrak human-readable yang jadi acuan utama.
@@ -669,8 +669,9 @@ Content-Type: application/json
 ```
 
 - `reply_to_wa_message_id` wajib — ambil dari `messages[].wa_message_id` di timeline `GET /api/cases/{id}` (pesan solver yang dibalas, bukan root). Milik case lain → `422`.
-- `attachments` maks 3 file (>3 → `422`), 5 MB per file decoded (>5 MB → `413`). MIME: `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `application/pdf` (lainnya → `422`).
-- Image terkirim via WAHA `sendImage` (caption = message), lainnya via `sendFile` (caption = nama file).
+- `attachments` maks 3 file (>3 → `422`), 5 MB per file decoded (>5 MB → `413`). MIME: `image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `application/pdf`, `text/plain`, `text/csv`, `application/vnd.ms-excel`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (lainnya → `422`).
+- Image terkirim via WAHA `sendImage`, lainnya via `sendFile`; `caption` = `message`, fallback nama file untuk `sendFile` bila `message` kosong.
+- **(v1.38) `mentions` berlaku juga saat ada attachment.** Payload `sendImage`/`sendFile` membawa `mentions` = union dropdown + token `@<nomor>` yang diketik di `message`. Sebelumnya mention mati total di balasan bermedia.
 - Salah satu dari `message` / `attachments` wajib diisi (keduanya kosong → `422`).
 
 **Response `200`:** `{ "ok": true, "wa_message_ids": ["..."] }`
@@ -807,7 +808,7 @@ WAHA ngetag kalau **nomor ada di teks** (`@628xxx`) — backend auto-extract sem
 }
 ```
 
-Kalau mention dikirim via dropdown FE (bukan diketik), isi `mentions: [{"number": "6281113021236", "name": "Mas Habib"}]` + tulis `@6281113021236` di teks. **Catatan:** mention hanya berjalan di pesan **teks** — reply media-only mengabaikan `mentions`.
+Kalau mention dikirim via dropdown FE (bukan diketik), isi `mentions: [{"number": "6281113021236", "name": "Mas Habib"}]` + tulis `@6281113021236` di teks. **(v1.38) Mention berjalan di pesan teks DAN di balasan berattachment:** `sendImage`/`sendFile` membawa `mentions` hasil union dropdown + token `@<nomor>` di `message` (yang jadi caption). Sebelumnya field itu tidak dikirim sehingga tag solver hilang saat balasan menyertakan file.
 
 ---
 
@@ -2192,6 +2193,13 @@ https://imgur.com/app_error
 > Required di tabel ini = aturan UI (v1.36). Backend menerima semua field opsional; `order_id` (Non AO/AO) wajib di UI karena menjadi `case_code` bila `ticket_remedy`/`case_id` kosong.
 
 ## 13. Changelog
+
+### v1.38 — mention di balasan berattachment + lampiran dokumen kantor
+
+- **§3.6a `POST /api/cases/{id}/replies`** — `mentions` kini ikut terkirim di `sendImage`/`sendFile`, bukan hanya `sendText`. Payload media: union `mentions` dropdown + token `@<nomor>` yang diketik di `message` (caption), pola identik `waha_send`. Akar masalah: DTO WAHA (`MessageImageRequest`/`MessageFileRequest`) memang punya field `mentions`, tapi payload aplikasi tidak pernah mengisinya → tag solver mati di balasan bergambar/dokumen.
+- **MIME lampiran bertambah** — `text/plain`, `text/csv`, `application/vnd.ms-excel`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (selain jpg/png/webp/mp4/pdf). Kirim via `sendFile`; `/api/media/file/{filename}` menyajikan MIME yang benar.
+- **Batas tidak berubah** — maks 3 file, 5 MB decoded per file.
+- Test: `tests/test_api.py::TestCaseRepliesMediaMentions` (mention dropdown, token `@nomor` di caption, tanpa mention, `.xlsx`).
 
 ### v1.37 — forward / kirim ulang case ke grup lain
 

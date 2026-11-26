@@ -2579,8 +2579,10 @@ class TestCaseReplies:
         with self._reply_client([{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1, "mentions": [], "wa_message_id": "root1", "deleted_at": None},
                                  {"wa_message_id": "solver1", "case_id": 6},
                                  {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"}]) as (tc, _):
+            # v1.38: text/plain, text/csv, xls, xlsx sudah didukung — pakai tipe
+            # yang memang di luar whitelist (arsip binary).
             r = tc.post("/api/cases/6/replies", json={"message": "halo", "reply_to_wa_message_id": "solver1",
-                "attachments": [{"filename": "a.txt", "mimetype": "text/plain",
+                "attachments": [{"filename": "a.zip", "mimetype": "application/zip",
                                  "data_base64": _b64.b64encode(b"hi").decode()}]})
             assert r.status_code == 422
             mock_waha.post.assert_not_called()
@@ -3097,6 +3099,89 @@ class TestCaseRepliesNoDoubleSend(TestCaseReplies):
             file_call = next(c for c in calls if "sendFile" in c.args[0])
             payload = file_call.kwargs.get("json") or file_call.args[1]
             assert payload["caption"] == "ini dokumennya"
+
+
+# ============ Test mention di balasan berattachment (v1.38) ============
+
+class TestCaseRepliesMediaMentions(TestCaseReplies):
+    """v1.38: sendImage/sendFile harus membawa `mentions` seperti sendText.
+
+    Regresi: payload media sebelumnya tidak pernah mengisi field `mentions`
+    (DTO WAHA punya field-nya), sehingga tag solver mati total setiap balasan
+    menyertakan gambar/dokumen.
+    """
+
+    _CASE_SEQ = [{"id": 6, "case_code": "INC1", "status": "open", "group_id": 1,
+                  "mentions": [], "wa_message_id": "root1", "deleted_at": None},
+                 {"wa_message_id": "solver1", "case_id": 6},
+                 {"id": 1, "name": "Grup A", "chat_id": "120363xxx@g.us"},
+                 None, None, None, None]
+
+    def _media_payload(self, mock_waha, endpoint: str) -> dict:
+        calls = [c for c in mock_waha.post.call_args_list
+                 if c.args and endpoint in str(c.args[0])]
+        assert calls, f"{endpoint} tidak dipanggil"
+        return calls[0].kwargs.get("json") or calls[0].args[1]
+
+    def _post(self, tc, **body):
+        return tc.post("/api/cases/6/replies", json={
+            "reply_to_wa_message_id": "solver1", **body})
+
+    def test_image_carries_dropdown_mention(self, mock_waha, tmp_path, monkeypatch):
+        """mentions dropdown + image → payload sendImage membawa nomor solver."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client(self._CASE_SEQ) as (tc, _):
+            r = self._post(tc,
+                message="@6281113021236 tolong cek ya",
+                mentions=[{"number": "6281113021236", "name": "Mas Habib"}],
+                attachments=[{"filename": "bukti.jpg", "mimetype": "image/jpeg",
+                              "data_base64": _b64.b64encode(b"fakejpeg").decode()}])
+            assert r.status_code == 200
+            payload = self._media_payload(mock_waha, "sendImage")
+            assert payload["mentions"] == ["6281113021236"]
+            assert payload["caption"] == "@6281113021236 tolong cek ya"
+
+    def test_file_autodetects_mention_from_caption(self, mock_waha, tmp_path, monkeypatch):
+        """Tanpa dropdown: token @nomor di caption tetap jadi mention (sendFile)."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client(self._CASE_SEQ) as (tc, _):
+            r = self._post(tc,
+                message="invoice @+62 812-3456-7890 mohon dicek",
+                attachments=[{"filename": "inv.xlsx",
+                              "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                              "data_base64": _b64.b64encode(b"xlsxbytes").decode()}])
+            assert r.status_code == 200
+            payload = self._media_payload(mock_waha, "sendFile")
+            assert payload["mentions"] == ["6281234567890"]
+            assert payload["file"]["filename"] == "inv.xlsx"
+
+    def test_dropdown_and_caption_mentions_deduped(self, mock_waha, tmp_path, monkeypatch):
+        """Nomor sama dari dropdown + caption → satu entri, urutan stabil."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client(self._CASE_SEQ) as (tc, _):
+            r = self._post(tc,
+                message="@6281113021236 @628999888777 cek dua-duanya",
+                mentions=[{"number": "6281113021236", "name": "Mas Habib"}],
+                attachments=[{"filename": "a.pdf", "mimetype": "application/pdf",
+                              "data_base64": _b64.b64encode(b"pdf").decode()}])
+            assert r.status_code == 200
+            assert self._media_payload(mock_waha, "sendFile")["mentions"] == [
+                "6281113021236", "628999888777"]
+
+    def test_no_mention_omits_field(self, mock_waha, tmp_path, monkeypatch):
+        """Tanpa mention → field tidak dikirim (payload tetap minimal)."""
+        import base64 as _b64
+        monkeypatch.setattr(main_module, "MEDIA_DIR", str(tmp_path))
+        with self._reply_client(self._CASE_SEQ) as (tc, _):
+            r = self._post(tc,
+                message="ini dokumennya",
+                attachments=[{"filename": "doc.pdf", "mimetype": "application/pdf",
+                              "data_base64": _b64.b64encode(b"pdf").decode()}])
+            assert r.status_code == 200
+            assert "mentions" not in self._media_payload(mock_waha, "sendFile")
 
 
 # ============================ Solver Response Metrics (v1.32) ============================

@@ -1,4 +1,9 @@
-"""IT Tracker v1.37 — forward / kirim ulang case ke grup lain (move + edit mention).
+"""IT Tracker v1.38 — mention di balasan berattachment (sendImage/sendFile).
+
+Perubahan v1.38: POST /api/cases/{id}/replies dengan attachments kini mengirim
+`mentions` ke WAHA (union dropdown + token `@<nomor>` di caption). Sebelumnya
+payload media tidak pernah membawa `mentions`, jadi tag solver mati total di
+balasan bergambar/dokumen. Lampiran juga menerima txt/csv/xls/xlsx.
 
 Perubahan v1.37: POST /api/cases/{id}/forward — kirim ulang case yang sudah ada ke
 grup lain (pindah: status kembali open, reminder di-reset) atau ke grup yang sama
@@ -212,13 +217,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IT Tracker",
     description=(
-        "Backend API untuk IT Tracker v1.37. "
+        "Backend API untuk IT Tracker v1.38. "
         "Mengelola case follow-up di grup WhatsApp dengan reply-chain traversal, "
         "multi-grup WA (switcher safe-by-default + grup default fallback + discovery /api/waha/groups), "
         "Area/Regional hierarchy, Sumber Ticket/Jenis Case, solver contacts, "
         "reminder (sundul), dan media proxy untuk image/video replies."
     ),
-    version="1.37.0",
+    version="1.38.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -2362,13 +2367,22 @@ async def reply_to_solver(case_id: int, inp: ReplyIn, request: Request,
         # DNS / SSL), memicu "WAHA error: 500". Base64 sudah ada di request
         # (tervalidasi di atas), jadi WAHA tidak perlu fetch apa pun.
         # File tetap disimpan ke MEDIA_DIR untuk timeline detail case.
+        # v1.27: teks jadi caption untuk SEMUA jenis media (konsisten anti double-send);
+        # tanpa teks → fallback nama file (file) / kosong (image)
+        caption = inp.message or (att.filename if endpoint != "sendImage" else "")
         payload = {"session": WAHA_SESSION, "chatId": group["chat_id"],
                    "file": {"mimetype": att.mimetype, "filename": att.filename,
                             "data": att.data_base64},
-                   "reply_to": inp.reply_to_wa_message_id}
-        # v1.27: teks jadi caption untuk SEMUA jenis media (konsisten anti double-send);
-        # tanpa teks → fallback nama file (file) / kosong (image)
-        payload["caption"] = inp.message or (att.filename if endpoint != "sendImage" else "")
+                   "reply_to": inp.reply_to_wa_message_id,
+                   "caption": caption}
+        # v1.38: WAHA MessageImageRequest/MessageFileRequest punya field `mentions`
+        # sama seperti sendText — sebelumnya payload media tidak pernah membawanya,
+        # jadi tag solver mati di balasan berattachment. Union dropdown + token
+        # @<nomor> yang diketik di caption (WhatsApp menuntut keduanya).
+        media_mentions = list(dict.fromkeys(
+            [*(m.number for m in inp.mentions), *extract_mention_numbers(caption)]))
+        if media_mentions:
+            payload["mentions"] = media_mentions
         mid = await waha_send_media(endpoint, payload)
         if mid:
             store_message(mid, inp.reply_to_wa_message_id, None, inp.message or att.filename,
